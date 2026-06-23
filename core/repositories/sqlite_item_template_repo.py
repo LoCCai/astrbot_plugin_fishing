@@ -179,10 +179,7 @@ class SqliteItemTemplateRepository(AbstractItemTemplateRepository):
         with self._get_connection() as conn:
             cursor = conn.cursor()
             if rarity is not None:
-                cursor.execute(
-                    "SELECT * FROM fish WHERE rarity = ? ORDER BY RANDOM() LIMIT 1",
-                    (rarity,),
-                )
+                cursor.execute("SELECT * FROM fish WHERE rarity = ? ORDER BY RANDOM() LIMIT 1", (rarity,))
             else:
                 cursor.execute("SELECT * FROM fish ORDER BY RANDOM() LIMIT 1")
             row = cursor.fetchone()
@@ -360,17 +357,18 @@ class SqliteItemTemplateRepository(AbstractItemTemplateRepository):
                 "garbage_reduction_modifier": data.get("garbage_reduction_modifier", 0.0),
                 "value_modifier": data.get("value_modifier", 1.0),
                 "quantity_modifier": data.get("quantity_modifier", 1.0),
-                "is_consumable": 1 if "is_consumable" in data else 0
+                "weight_modifier": data.get("weight_modifier", 1.0),
+                "is_consumable": 1 if data.get("is_consumable", False) else 0
             }
             cursor.execute("""
                 INSERT INTO baits (
                     name, description, rarity, effect_description, duration_minutes, cost, required_rod_rarity,
                     success_rate_modifier, rare_chance_modifier, garbage_reduction_modifier,
-                    value_modifier, quantity_modifier, is_consumable
+                    value_modifier, quantity_modifier, weight_modifier, is_consumable
                 ) VALUES (
                     :name, :description, :rarity, :effect_description, :duration_minutes, :cost, :required_rod_rarity,
                     :success_rate_modifier, :rare_chance_modifier, :garbage_reduction_modifier,
-                    :value_modifier, :quantity_modifier, :is_consumable
+                    :value_modifier, :quantity_modifier, :weight_modifier, :is_consumable
                 )
             """, params)
             conn.commit()
@@ -393,7 +391,8 @@ class SqliteItemTemplateRepository(AbstractItemTemplateRepository):
                 "garbage_reduction_modifier": data.get("garbage_reduction_modifier", 0.0),
                 "value_modifier": data.get("value_modifier", 1.0),
                 "quantity_modifier": data.get("quantity_modifier", 1.0),
-                "is_consumable": 1 if "is_consumable" in data else 0
+                "weight_modifier": data.get("weight_modifier", 1.0),
+                "is_consumable": 1 if data.get("is_consumable", False) else 0
             }
             cursor.execute("""
                 UPDATE baits SET
@@ -402,7 +401,8 @@ class SqliteItemTemplateRepository(AbstractItemTemplateRepository):
                     cost = :cost, required_rod_rarity = :required_rod_rarity,
                     success_rate_modifier = :success_rate_modifier, rare_chance_modifier = :rare_chance_modifier,
                     garbage_reduction_modifier = :garbage_reduction_modifier, value_modifier = :value_modifier,
-                    quantity_modifier = :quantity_modifier, is_consumable = :is_consumable
+                    quantity_modifier = :quantity_modifier, weight_modifier = :weight_modifier,
+                    is_consumable = :is_consumable
                 WHERE bait_id = :bait_id
             """, params)
             conn.commit()
