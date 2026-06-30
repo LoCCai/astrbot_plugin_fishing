@@ -770,6 +770,7 @@ async def update_pool_item_weight(item_id):
 @admin_required
 async def manage_users():
     user_service = current_app.config["USER_SERVICE"]
+    bank_service = current_app.config.get("BANK_SERVICE")
     page = int(request.args.get("page", 1))
     search = request.args.get("search", "")
     
@@ -778,10 +779,15 @@ async def manage_users():
     if not result["success"]:
         await flash("获取用户列表失败：" + result.get("message", "未知错误"), "danger")
         return redirect(url_for("admin_bp.index"))
+
+    bank_summaries = {}
+    if bank_service:
+        bank_summaries = bank_service.get_admin_summary_for_users(result["users"])
     
     return await render_template(
         "users.html", 
         users=result["users"], 
+        bank_summaries=bank_summaries,
         pagination=result["pagination"],
         search=search
     )
@@ -791,6 +797,7 @@ async def manage_users():
 @admin_required
 async def get_user_detail(user_id):
     user_service = current_app.config["USER_SERVICE"]
+    bank_service = current_app.config.get("BANK_SERVICE")
     result = user_service.get_user_details_for_admin(user_id)
     
     if not result["success"]:
@@ -813,14 +820,50 @@ async def get_user_detail(user_id):
         "last_login_time": result["user"].last_login_time.isoformat() if result["user"].last_login_time else None
     }
     
+    bank_summary = {}
+    if bank_service:
+        bank_summary = bank_service.get_admin_summary_for_users([result["user"]]).get(user_id, {})
+
     return {
         "success": True,
         "user": user_dict,
+        "bank": bank_summary,
         "equipped_rod": result["equipped_rod"],
         "equipped_accessory": result["equipped_accessory"],
         "current_title": result["current_title"],
         "titles": result.get("titles", [])
     }
+
+@admin_bp.route("/bank")
+@login_required
+@admin_required
+async def manage_bank():
+    user_service = current_app.config["USER_SERVICE"]
+    bank_service = current_app.config["BANK_SERVICE"]
+    page = int(request.args.get("page", 1))
+    search = request.args.get("search", "")
+
+    result = user_service.get_users_for_admin(page=page, per_page=20, search=search or None)
+    if not result["success"]:
+        await flash("获取银行用户列表失败：" + result.get("message", "未知错误"), "danger")
+        return redirect(url_for("admin_bp.index"))
+
+    bank_summaries = bank_service.get_admin_summary_for_users(result["users"])
+    totals = bank_service.get_admin_totals()
+    fixed_deposits = bank_service.get_fixed_deposits_for_admin(search=search or None, limit=100)
+    fixed_terms = bank_service.get_fixed_terms()
+
+    return await render_template(
+        "bank.html",
+        users=result["users"],
+        bank_summaries=bank_summaries,
+        pagination=result["pagination"],
+        search=search,
+        totals=totals,
+        fixed_deposits=fixed_deposits,
+        fixed_terms=fixed_terms,
+        now=datetime.now(),
+    )
 
 @admin_bp.route("/users/<user_id>/update", methods=["POST"])
 @login_required

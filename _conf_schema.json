@@ -140,10 +140,16 @@
           "early_withdraw_penalty_rate": {
             "description": "提前取出违约金率",
             "type": "float",
-            "hint": "提前取出时对本金收取的违约金率，默认0表示不收",
-            "default": 0.0,
+            "hint": "提前取出大额定期时对本金收取的违约金率，例如0.01表示1%",
+            "default": 0.01,
             "min": 0.0,
             "max": 1.0
+          },
+          "early_withdraw_penalty_threshold": {
+            "description": "提前取出违约金门槛",
+            "type": "int",
+            "hint": "本金超过该金额的定期提前取出时才收取违约金",
+            "default": 1000000
           },
           "terms": {
             "description": "定期档位收益率",
@@ -152,20 +158,26 @@
               "1": {
                 "description": "1天定期收益率",
                 "type": "float",
-                "hint": "例如0.002表示0.2%",
-                "default": 0.002
+                "hint": "例如0.001表示0.1%",
+                "default": 0.001
               },
               "3": {
                 "description": "3天定期收益率",
                 "type": "float",
-                "hint": "例如0.008表示0.8%",
-                "default": 0.008
+                "hint": "例如0.004表示0.4%",
+                "default": 0.004
               },
               "7": {
                 "description": "7天定期收益率",
                 "type": "float",
-                "hint": "例如0.02表示2%",
-                "default": 0.02
+                "hint": "例如0.01表示1%",
+                "default": 0.01
+              },
+              "30": {
+                "description": "30天定期收益率",
+                "type": "float",
+                "hint": "例如0.05表示5%",
+                "default": 0.05
               }
             }
           }

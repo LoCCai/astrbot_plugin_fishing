@@ -122,7 +122,7 @@ def _parse_term_days(term_arg: str):
     try:
         term_days = int(term_arg.replace("天", ""))
     except ValueError:
-        return None, "❌ 定期天数格式错误，可选：1、3、7"
+        return None, "❌ 定期天数格式错误，请使用 /钓鱼银行 定期 查看可选档位"
     return term_days, None
 
 
@@ -174,7 +174,8 @@ def _format_fixed_terms(result):
         "【🏦 银行定期】\n"
         f"单笔范围：{result['min_amount']:,} - {result['max_amount']:,} 金币\n"
         f"最多进行中：{result['max_active']} 笔\n"
-        f"提前取出违约金：{result['early_withdraw_penalty_rate'] * 100:.1f}%\n\n"
+        f"提前取出：收益清零，本金超过 {result['early_withdraw_penalty_threshold']:,} 金币收 "
+        f"{result['early_withdraw_penalty_rate'] * 100:.1f}% 违约金\n\n"
         "可选档位：\n"
     )
     for days, rate in sorted(result["terms"].items()):

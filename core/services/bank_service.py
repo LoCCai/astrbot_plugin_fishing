@@ -52,10 +52,13 @@ class BankService:
         return int(self._fixed_deposit_config().get("max_active_deposits", 5))
 
     def _fixed_terms(self) -> Dict[str, float]:
-        return self._fixed_deposit_config().get("terms", {"1": 0.002, "3": 0.008, "7": 0.02})
+        return self._fixed_deposit_config().get("terms", {"1": 0.001, "3": 0.004, "7": 0.01, "30": 0.05})
 
     def _early_withdraw_penalty_rate(self) -> float:
-        return float(self._fixed_deposit_config().get("early_withdraw_penalty_rate", 0.0))
+        return float(self._fixed_deposit_config().get("early_withdraw_penalty_rate", 0.01))
+
+    def _early_withdraw_penalty_threshold(self) -> int:
+        return int(self._fixed_deposit_config().get("early_withdraw_penalty_threshold", 1_000_000))
 
     def _reset_date(self) -> str:
         reset_hour = self.config.get("daily_reset_hour", 0)
@@ -199,6 +202,7 @@ class BankService:
             "max_amount": self._fixed_max_amount(),
             "max_active": self._fixed_max_active(),
             "early_withdraw_penalty_rate": self._early_withdraw_penalty_rate(),
+            "early_withdraw_penalty_threshold": self._early_withdraw_penalty_threshold(),
         }
 
     def create_fixed_deposit(self, user_id: str, amount: int, term_days: int) -> Dict[str, Any]:
@@ -261,6 +265,16 @@ class BankService:
             "terms": self.get_fixed_terms(),
         }
 
+    def get_admin_summary_for_users(self, users) -> Dict[str, Dict[str, Any]]:
+        user_ids = [user.user_id for user in users]
+        return self.bank_repo.get_admin_summary_for_users(user_ids)
+
+    def get_admin_totals(self) -> Dict[str, int]:
+        return self.bank_repo.get_admin_totals()
+
+    def get_fixed_deposits_for_admin(self, search: str = None, limit: int = 100):
+        return self.bank_repo.get_fixed_deposits_for_admin(search=search or None, limit=limit)
+
     def complete_fixed_deposit(self, user_id: str, deposit_id: int) -> Dict[str, Any]:
         if not self.is_enabled():
             return {"success": False, "message": "银行系统暂未启用"}
@@ -296,7 +310,9 @@ class BankService:
             return {"success": False, "message": "银行定期存款暂未启用"}
         deposit_candidates = self.bank_repo.get_fixed_deposits(user_id, limit=50)
         target = next((d for d in deposit_candidates if d.deposit_id == deposit_id and d.status == "active"), None)
-        penalty_amount = int(target.principal * self._early_withdraw_penalty_rate()) if target else 0
+        penalty_amount = 0
+        if target and target.principal > self._early_withdraw_penalty_threshold():
+            penalty_amount = int(target.principal * self._early_withdraw_penalty_rate())
         success, message, deposit, account, penalty_amount = self.bank_repo.cancel_fixed_deposit(
             user_id, deposit_id, penalty_amount
         )

@@ -1,6 +1,6 @@
 import sqlite3
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from astrbot.api import logger
 
@@ -45,7 +45,21 @@ class SqliteBankRepository:
     def _row_to_fixed_deposit(self, row: sqlite3.Row) -> Optional[BankFixedDeposit]:
         if not row:
             return None
-        data = dict(row)
+        allowed_keys = {
+            "deposit_id",
+            "user_id",
+            "principal",
+            "term_days",
+            "interest_rate",
+            "expected_interest",
+            "status",
+            "started_at",
+            "matures_at",
+            "completed_at",
+            "created_at",
+            "updated_at",
+        }
+        data = {key: value for key, value in dict(row).items() if key in allowed_keys}
         for key in ("started_at", "matures_at", "completed_at", "created_at", "updated_at"):
             if isinstance(data.get(key), str):
                 try:
@@ -344,6 +358,138 @@ class SqliteBankRepository:
                 WHERE user_id = ? AND status = 'active'
             """, (user_id,))
             return cursor.fetchone()["cnt"]
+
+    def get_admin_summary_for_users(self, user_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        if not user_ids:
+            return {}
+
+        summaries = {
+            user_id: {
+                "account_balance": 0,
+                "today_withdrawn": 0,
+                "active_fixed_count": 0,
+                "active_fixed_principal": 0,
+                "active_expected_interest": 0,
+                "next_maturity": None,
+                "completed_fixed_count": 0,
+                "cancelled_fixed_count": 0,
+                "total_fixed_count": 0,
+            }
+            for user_id in user_ids
+        }
+        placeholders = ",".join(["?"] * len(user_ids))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT user_id, balance, today_withdrawn
+                FROM bank_accounts
+                WHERE user_id IN ({placeholders})
+            """, user_ids)
+            for row in cursor.fetchall():
+                summary = summaries[row["user_id"]]
+                summary["account_balance"] = row["balance"] or 0
+                summary["today_withdrawn"] = row["today_withdrawn"] or 0
+
+            cursor.execute(f"""
+                SELECT
+                    user_id,
+                    SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_fixed_count,
+                    SUM(CASE WHEN status = 'active' THEN principal ELSE 0 END) AS active_fixed_principal,
+                    SUM(CASE WHEN status = 'active' THEN expected_interest ELSE 0 END) AS active_expected_interest,
+                    MIN(CASE WHEN status = 'active' THEN matures_at ELSE NULL END) AS next_maturity,
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_fixed_count,
+                    SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_fixed_count,
+                    COUNT(*) AS total_fixed_count
+                FROM bank_fixed_deposits
+                WHERE user_id IN ({placeholders})
+                GROUP BY user_id
+            """, user_ids)
+            for row in cursor.fetchall():
+                summary = summaries[row["user_id"]]
+                for key in (
+                    "active_fixed_count",
+                    "active_fixed_principal",
+                    "active_expected_interest",
+                    "completed_fixed_count",
+                    "cancelled_fixed_count",
+                    "total_fixed_count",
+                ):
+                    summary[key] = row[key] or 0
+                summary["next_maturity"] = row["next_maturity"]
+
+        return summaries
+
+    def get_admin_totals(self) -> Dict[str, int]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    COALESCE(SUM(balance), 0) AS total_account_balance,
+                    COUNT(*) AS account_count
+                FROM bank_accounts
+            """)
+            account_row = cursor.fetchone()
+            cursor.execute("""
+                SELECT
+                    COALESCE(SUM(CASE WHEN status = 'active' THEN principal ELSE 0 END), 0) AS active_fixed_principal,
+                    COALESCE(SUM(CASE WHEN status = 'active' THEN expected_interest ELSE 0 END), 0) AS active_expected_interest,
+                    SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_fixed_count,
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_fixed_count,
+                    SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_fixed_count,
+                    COUNT(*) AS total_fixed_count
+                FROM bank_fixed_deposits
+            """)
+            fixed_row = cursor.fetchone()
+            return {
+                "total_account_balance": account_row["total_account_balance"] or 0,
+                "account_count": account_row["account_count"] or 0,
+                "active_fixed_principal": fixed_row["active_fixed_principal"] or 0,
+                "active_expected_interest": fixed_row["active_expected_interest"] or 0,
+                "active_fixed_count": fixed_row["active_fixed_count"] or 0,
+                "completed_fixed_count": fixed_row["completed_fixed_count"] or 0,
+                "cancelled_fixed_count": fixed_row["cancelled_fixed_count"] or 0,
+                "total_fixed_count": fixed_row["total_fixed_count"] or 0,
+            }
+
+    def get_fixed_deposits_for_admin(self, search: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        params: List[Any] = []
+        where = ""
+        if search:
+            where = "WHERE d.user_id LIKE ? OR COALESCE(u.nickname, '') LIKE ?"
+            keyword = f"%{search}%"
+            params.extend([keyword, keyword])
+        params.append(limit)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT
+                    d.*,
+                    COALESCE(u.nickname, '') AS nickname,
+                    COALESCE(u.coins, 0) AS wallet_balance,
+                    COALESCE(a.balance, 0) AS account_balance
+                FROM bank_fixed_deposits d
+                LEFT JOIN users u ON u.user_id = d.user_id
+                LEFT JOIN bank_accounts a ON a.user_id = d.user_id
+                {where}
+                ORDER BY
+                    CASE d.status WHEN 'active' THEN 0 WHEN 'completed' THEN 1 ELSE 2 END,
+                    d.matures_at ASC,
+                    d.deposit_id DESC
+                LIMIT ?
+            """, params)
+            deposits = []
+            for row in cursor.fetchall():
+                data = dict(row)
+                deposit = self._row_to_fixed_deposit(row)
+                deposits.append({
+                    "deposit": deposit,
+                    "nickname": data.get("nickname"),
+                    "wallet_balance": data.get("wallet_balance", 0),
+                    "account_balance": data.get("account_balance", 0),
+                })
+            return deposits
 
     def create_fixed_deposit(
         self,
