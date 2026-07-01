@@ -34,6 +34,18 @@
     </div>
 
     <div class="col-lg-4 col-md-6 mb-4">
+        <a href="{{ url_for('admin_bp.manage_tax') }}" class="dashboard-card">
+            <div class="card text-white h-100" style="background-color: #b45309;">
+                <div class="card-body text-center">
+                    <i class="fas fa-receipt d-block mb-3"></i>
+                    <h4 class="card-title">税收管理</h4>
+                    <p class="card-text">调整每日资产税规则，查看用户税收记录。</p>
+                </div>
+            </div>
+        </a>
+    </div>
+
+    <div class="col-lg-4 col-md-6 mb-4">
         <a href="{{ url_for('admin_bp.manage_zones') }}" class="dashboard-card">
             <div class="card text-white h-100" style="background-color: #e83e8c;">
                 <div class="card-body text-center">

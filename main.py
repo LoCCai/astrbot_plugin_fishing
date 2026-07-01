@@ -174,6 +174,8 @@ class FishingPlugin(Star):
             "tax": {
                 "is_tax": self.is_tax,
                 "threshold": self.threshold,
+                "asset_scope": tax_config.get("asset_scope", "wallet"),
+                "taxable_mode": tax_config.get("taxable_mode", "total"),
                 "step_coins": self.step_coins,
                 "step_rate": self.step_rate,
                 "min_rate": self.min_rate,
@@ -283,6 +285,7 @@ class FishingPlugin(Star):
             self.fishing_zone_service,
             self.fish_weight_service,
             self.game_config,
+            self.bank_repo,
         )
         
         # 导入并初始化水族箱服务

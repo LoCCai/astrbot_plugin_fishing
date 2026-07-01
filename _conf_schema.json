@@ -33,6 +33,18 @@
         "hint": "税收的起征点，低于此值不收税",
         "default": 1000000
       },
+      "asset_scope": {
+        "description": "每日资产税统计范围",
+        "type": "string",
+        "hint": "wallet=只统计钱包；wallet_bank=钱包+银行活期；wallet_bank_fixed=钱包+银行活期+进行中定期本金",
+        "default": "wallet"
+      },
+      "taxable_mode": {
+        "description": "每日资产税计税模式",
+        "type": "string",
+        "hint": "total=达到起征点后按全部统计资产征税；excess=只对超过起征点的部分征税",
+        "default": "total"
+      },
       "step_coins": {
         "description": "税收的步长",
         "type": "int",

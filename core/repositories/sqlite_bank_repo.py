@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from astrbot.api import logger
 
 from ..domain.bank_models import BankAccount, BankFixedDeposit, BankWithdrawReservation
+from ..domain.models import User
 
 
 class SqliteBankRepository:
@@ -29,6 +30,31 @@ class SqliteBankRepository:
         if not row:
             return None
         return BankAccount(**dict(row))
+
+    def _row_to_user(self, row: sqlite3.Row) -> Optional[User]:
+        if not row:
+            return None
+        allowed_keys = set(User.__dataclass_fields__.keys())
+        data = {key: value for key, value in dict(row).items() if key in allowed_keys}
+        for key in (
+            "created_at",
+            "last_login_time",
+            "last_fishing_time",
+            "last_wipe_bomb_time",
+            "last_steal_time",
+            "last_electric_fish_time",
+            "last_stolen_at",
+            "bait_start_time",
+            "last_wof_play_time",
+            "wof_last_action_time",
+            "last_sicbo_time",
+        ):
+            if isinstance(data.get(key), str):
+                try:
+                    data[key] = datetime.fromisoformat(data[key])
+                except ValueError:
+                    pass
+        return User(**data)
 
     def _row_to_reservation(self, row: sqlite3.Row) -> Optional[BankWithdrawReservation]:
         if not row:
@@ -451,6 +477,83 @@ class SqliteBankRepository:
                 "cancelled_fixed_count": fixed_row["cancelled_fixed_count"] or 0,
                 "total_fixed_count": fixed_row["total_fixed_count"] or 0,
             }
+
+    def get_daily_tax_subjects(self, threshold: int, asset_scope: str) -> List[Dict[str, Any]]:
+        include_fixed = asset_scope == "wallet_bank_fixed"
+        fixed_expr = "COALESCE(fd.active_fixed_principal, 0)" if include_fixed else "0"
+        assessed_expr = f"(COALESCE(u.coins, 0) + COALESCE(a.balance, 0) + {fixed_expr})"
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT
+                    u.*,
+                    COALESCE(a.balance, 0) AS bank_balance,
+                    COALESCE(fd.active_fixed_principal, 0) AS active_fixed_principal,
+                    {assessed_expr} AS assessed_assets
+                FROM users u
+                LEFT JOIN bank_accounts a ON a.user_id = u.user_id
+                LEFT JOIN (
+                    SELECT user_id, SUM(principal) AS active_fixed_principal
+                    FROM bank_fixed_deposits
+                    WHERE status = 'active'
+                    GROUP BY user_id
+                ) fd ON fd.user_id = u.user_id
+                WHERE {assessed_expr} >= ?
+            """, (threshold,))
+            subjects = []
+            for row in cursor.fetchall():
+                subjects.append({
+                    "user": self._row_to_user(row),
+                    "wallet_balance": row["coins"] or 0,
+                    "bank_balance": row["bank_balance"] or 0,
+                    "active_fixed_principal": row["active_fixed_principal"] or 0,
+                    "assessed_assets": row["assessed_assets"] or 0,
+                })
+            return subjects
+
+    def collect_daily_tax(self, user_id: str, tax_amount: int) -> Tuple[int, int]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
+                self._ensure_account(cursor, user_id)
+                cursor.execute("""
+                    SELECT u.coins, a.balance
+                    FROM users u
+                    LEFT JOIN bank_accounts a ON a.user_id = u.user_id
+                    WHERE u.user_id = ?
+                """, (user_id,))
+                row = cursor.fetchone()
+                if not row:
+                    conn.rollback()
+                    return 0, 0
+
+                wallet_balance = row["coins"] or 0
+                bank_balance = row["balance"] or 0
+                actual_tax = min(max(tax_amount, 0), wallet_balance + bank_balance)
+                wallet_deduction = min(wallet_balance, actual_tax)
+                bank_deduction = actual_tax - wallet_deduction
+
+                now = datetime.now()
+                cursor.execute(
+                    "UPDATE users SET coins = coins - ? WHERE user_id = ?",
+                    (wallet_deduction, user_id),
+                )
+                if bank_deduction > 0:
+                    cursor.execute("""
+                        UPDATE bank_accounts
+                        SET balance = balance - ?, updated_at = ?
+                        WHERE user_id = ?
+                    """, (bank_deduction, now, user_id))
+
+                balance_after = wallet_balance + bank_balance - actual_tax
+                conn.commit()
+                return actual_tax, balance_after
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"每日资产税扣款失败: {e}")
+                raise
 
     def get_fixed_deposits_for_admin(self, search: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
         params: List[Any] = []
