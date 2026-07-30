@@ -8,13 +8,15 @@
 
 <div style="background: linear-gradient(135deg, #0ea5e9 0%,#86a4f8 100%); padding: 20px; border-radius: 15px; margin: 20px 0; box-shadow: 0 8px 32px hsla(199, 94.70%, 62.70%, 0.89);">
 
-### 🛡️ **v2.6.3 隐私保护修复**
+### 🏦 **v2.6.4 银行系统上线**
 
-🎯 **默认不再向第三方目标发送擦弹统计数据！**
+🎯 **金币有地方存了，还能吃利息！**
 
-🔒 **移除第三方统计上报** - 删除擦弹结算后向 `http://veyu.me/api/record` 上传数据的逻辑<br>
-🎮 **玩法保持不变** - 擦弹游戏、本地日志、奖励结算和返回结果保持正常<br>
-🧩 **同步上游 2.6.3** - 补齐隐私修复说明和版本号<br>
+🏦 **银行活期** - 存取款即时到账，每日 100 万免费提现额度，超出部分收取 3% 手续费<br>
+📜 **定期存款** - 1/3/7/30 天档位，最高 5% 到期收益，提前取出不计收益<br>
+🔐 **大额预约** - 单笔 500 万及以上取款需提前 24 小时预约，期间资金锁定<br>
+🧾 **资产税可配** - 银行活期默认参与每日资产税，计税范围与扣款来源均可调整<br>
+📊 **后台管理** - 新增银行管理与税收管理页面<br>
 
 
 </div>
@@ -26,7 +28,7 @@
 [![AGPL-3.0 License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://opensource.org/licenses/AGPL-3.0)
 [![Python](https://img.shields.io/badge/Python-3.8+-green.svg)](https://python.org)
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-orange.svg)](https://github.com/astrbot/astrbot)
-[![Version](https://img.shields.io/badge/Version-2.6.3-brightgreen.svg)](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/releases/tag/v2.6.3)
+[![Version](https://img.shields.io/badge/Version-2.6.4-brightgreen.svg)](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/releases/tag/v2.6.4)
 [![Major Update](https://img.shields.io/badge/Major-Update-red.svg)](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/releases/tag/v2.0.0)
 
 ## ✨ 功能特点
@@ -105,6 +107,18 @@
 如果您有功能建议或发现问题，欢迎在 [Issues](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/issues) 中提出！
 
 ## 📦 更新记录
+
+#### 🏦 **v2.6.4 银行系统 + 资产税范围可配 + SQLite 事务加固**
+
+- 新增银行系统：活期存取款、每日免费提现额度与超额手续费、大额取款预约、1/3/7/30 天定期存款
+- 新增 Web 后台「银行管理」与「税收管理」页面，用户管理页同步展示银行资产
+- 每日资产税新增 `asset_scope` / `deduct_scope` / `taxable_mode` 配置，银行活期默认参与资产税，可扣来源不足时记为欠税并在后续取款时补扣
+- 修复预约取款手续费在下单时冻结、确认时不重算的问题，避免同一份每日免费额度被重复使用
+- 取款手续费与定期违约金改为在数据库事务内计算
+- 钓鱼结算、卖鱼、装备变现、智能扣除与借贷事务改为原子操作，补齐失败回滚与写锁释放
+- 感谢 [@LoCCai](https://github.com/LoCCai) 的贡献 ([#17](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/pull/17))
+
+---
 
 #### 🛡️ **v2.6.3 隐私保护修复**
 
