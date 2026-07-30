@@ -15,7 +15,7 @@ from ..repositories.abstract_repository import (
     AbstractLogRepository,
     AbstractUserBuffRepository,
 )
-from ..domain.models import FishingRecord, TaxRecord, FishingZone
+from ..domain.models import TaxRecord, FishingZone
 from ..services.fishing_zone_service import FishingZoneService
 from .fish_weight_service import FishWeightService
 from ..utils import get_now, get_last_reset_time, calculate_after_refine
@@ -34,6 +34,7 @@ class FishingService:
         fishing_zone_service: FishingZoneService,
         fish_weight_service: FishWeightService,
         config: Dict[str, Any],
+        bank_repo=None,
     ):
         self.user_repo = user_repo
         self.inventory_repo = inventory_repo
@@ -43,6 +44,7 @@ class FishingService:
         self.fish_weight_service = fish_weight_service
         self.fishing_zone_service = fishing_zone_service
         self.config = config
+        self.bank_repo = bank_repo
 
         # 获取每日刷新时间配置
         self.daily_reset_hour = self.config.get("daily_reset_hour", 0)
@@ -50,9 +52,11 @@ class FishingService:
         # 自动钓鱼线程相关属性
         self.auto_fishing_thread: Optional[threading.Thread] = None
         self.auto_fishing_running = False
+        self._auto_fishing_stop_event = threading.Event()
         # 税收线程相关属性
         self.tax_thread: Optional[threading.Thread] = None
         self.tax_running = False
+        self._tax_stop_event = threading.Event()
         self.last_tax_reset_time = get_last_reset_time(self.daily_reset_hour)
         self.tax_execution_lock = threading.Lock()  # 防止税收并发执行的锁
         self.tax_start_lock = threading.Lock()  # 防止重复创建税收线程的锁
@@ -117,14 +121,11 @@ class FishingService:
         Returns:
             一个包含操作结果的字典。
         """
-        user = self.user_repo.get_by_id(user_id)
-        if not user:
+        enabled = self.user_repo.toggle_auto_fishing(user_id)
+        if enabled is None:
             return {"success": False, "message": "❌您还没有注册，请先使用 /注册 命令注册。"}
 
-        user.auto_fishing_enabled = not user.auto_fishing_enabled
-        self.user_repo.update(user)
-
-        if user.auto_fishing_enabled:
+        if enabled:
             return {"success": True, "message": "🎣 自动钓鱼已开启！"}
         else:
             return {"success": True, "message": "🚫 自动钓鱼已关闭！"}
@@ -163,7 +164,7 @@ class FishingService:
         if zone.available_until and now > zone.available_until:
             # 区域已关闭，自动传送回初始区域
             user.fishing_zone_id = 1
-            self.user_repo.update(user)
+            self.user_repo.set_fishing_zone(user_id, 1)
             # 获取初始区域的名字
             first_zone = self.inventory_repo.get_zone_by_id(1)
             first_zone_name = first_zone.name if first_zone else "初始区域"
@@ -176,15 +177,12 @@ class FishingService:
                 if requirement_error:
                     user.current_bait_id = None
                     user.bait_start_time = None
-                    self.user_repo.update(user)
+                    self.user_repo.update_bait_state(user_id, None, None)
                     return {"success": False, "message": requirement_error}
         
         fishing_cost = zone.fishing_cost
         if not user.can_afford(fishing_cost):
             return {"success": False, "message": f"金币不足，需要 {fishing_cost} 金币。"}
-
-        # 先扣除成本
-        user.coins -= fishing_cost
 
         # 2. 计算各种加成和修正值
         base_success_rate = 0.7 # 基础成功率70%
@@ -246,7 +244,7 @@ class FishingService:
                 if requirement_error:
                     user.current_bait_id = None
                     user.bait_start_time = None
-                    self.user_repo.update(user)
+                    self.user_repo.update_bait_state(user_id, None, None)
                     return {"success": False, "message": requirement_error}
 
             if bait_template and bait_template.duration_minutes > 0:
@@ -265,7 +263,7 @@ class FishingService:
                         user.current_bait_id = None
                         user.bait_start_time = None
                         self.inventory_repo.update_bait_quantity(user_id, cur_bait_id, -1)
-                        self.user_repo.update(user)
+                        self.user_repo.update_bait_state(user_id, None, None)
                         logger.warning(f"用户 {user_id} 的当前鱼饵{bait_template}已过期，已被清除。")
             else:
                 if bait_template:
@@ -277,13 +275,13 @@ class FishingService:
                         # 如果用户没有库存鱼饵，清除当前鱼饵
                         user.current_bait_id = None
                         user.bait_start_time = None
-                        self.user_repo.update(user)
+                        self.user_repo.update_bait_state(user_id, None, None)
                         logger.warning(f"用户 {user_id} 的当前鱼饵{bait_template.bait_id}已被清除，因为库存不足。")
                 else:
                     # 如果鱼饵模板不存在，清除当前鱼饵
                     user.current_bait_id = None
                     user.bait_start_time = None
-                    self.user_repo.update(user)
+                    self.user_repo.update_bait_state(user_id, None, None)
                     logger.warning(f"用户 {user_id} 的当前鱼饵已被清除，因为鱼饵模板不存在。")
 
         if user.current_bait_id is None:
@@ -301,7 +299,9 @@ class FishingService:
                         if bait_template.duration_minutes > 0:
                             user.bait_start_time = get_now()
 
-                        self.user_repo.update(user)
+                        self.user_repo.update_bait_state(
+                            user_id, user.current_bait_id, user.bait_start_time
+                        )
                         logger.info(f"用户 {user_id} 自动续装了同款鱼饵: {cur_bait_id}")
                         is_renewed = True
             
@@ -316,7 +316,9 @@ class FishingService:
                     if new_bait_template and new_bait_template.duration_minutes > 0:
                         user.bait_start_time = get_now()
                     
-                    self.user_repo.update(user)
+                    self.user_repo.update_bait_state(
+                        user_id, user.current_bait_id, user.bait_start_time
+                    )
                     logger.info(f"用户 {user_id} 同款耗尽，自动随机切换至新鱼饵: {random_bait_id}")
 
         if user.current_bait_id is not None:
@@ -333,8 +335,8 @@ class FishingService:
         # 3. 判断是否成功钓到
         if random.random() >= base_success_rate:
             # 失败逻辑
-            user.last_fishing_time = get_now()
-            self.user_repo.update(user)
+            if not self.user_repo.record_failed_fishing(user_id, fishing_cost, get_now()):
+                return {"success": False, "message": f"金币不足，需要 {fishing_cost} 金币。"}
             return {"success": False, "message": "💨 什么都没钓到..."}
 
         # 4. 成功，生成渔获
@@ -442,100 +444,53 @@ class FishingService:
             if fractional > 0 and random.random() < fractional:
                 total_catches += 1
 
-        # 5. 处理鱼塘容量（在确定总渔获量后）
-        user_fish_inventory = self.inventory_repo.get_fish_inventory(user.user_id)
-        current_fish_count = sum(item.quantity for item in user_fish_inventory)
-        
-        # 计算放入新鱼后是否会溢出，以及溢出多少
-        overflow_amount = (current_fish_count + total_catches) - user.fish_pond_capacity
-
-        if overflow_amount > 0:
-            # 鱼塘空间不足，需要移除 `overflow_amount` 条鱼
-            # 采用循环随机移除的策略，确保腾出足够空间
-            for _ in range(overflow_amount):
-                # 每次循环都重新获取一次库存，防止某个种类的鱼被移除完
-                current_inventory_for_removal = self.inventory_repo.get_fish_inventory(user.user_id)
-                if not current_inventory_for_removal:
-                    break # 如果鱼塘已经空了，就停止移除
-                
-                # 随机选择一个鱼种（堆叠）来移除
-                random_fish_stack = random.choice(current_inventory_for_removal)
-                self.inventory_repo.update_fish_quantity(
-                    user.user_id,
-                    random_fish_stack.fish_id,
-                    -1
-                )
-
-        if fish_template.rarity >= 4:
-            # 如果是4星及以上稀有鱼，增加用户的稀有鱼捕获计数
-            zone = self.inventory_repo.get_zone_by_id(user.fishing_zone_id)
-            if zone:
-                zone.rare_fish_caught_today += 1
-                self.inventory_repo.update_fishing_zone(zone)
-
-        # 6. 更新数据库
-        self.inventory_repo.add_fish_to_inventory(user.user_id, fish_template.fish_id, quantity=total_catches, quality_level=quality_level)
-
-        # 更新用户统计数据
-        user.total_fishing_count += total_catches
-        user.total_weight_caught += weight
-        # 高品质鱼的统计价值按双倍计算
-        if quality_level == 1:
-            user.total_coins_earned += fish_template.base_value * total_catches * 2
-        else:
-            user.total_coins_earned += fish_template.base_value * total_catches
-        user.last_fishing_time = get_now()
-        
-        # 处理装备耐久度消耗
+        # 5. 计算装备变化，最终与库存、统计和日志一起原子提交。
         equipment_broken_messages = []
-
-        # 判断用户的鱼竿是否存在并处理耐久度
+        rod_instance_id = None
+        rod_durability = None
+        rod_broken = False
         if user.equipped_rod_instance_id:
             rod_instance = self.inventory_repo.get_user_rod_instance_by_id(user.user_id, user.equipped_rod_instance_id)
-            if not rod_instance:
-                user.equipped_rod_instance_id = None
-            else:
-                # 减少鱼竿耐久度（仅当为有限耐久时）
+            if rod_instance:
+                rod_instance_id = rod_instance.rod_instance_id
                 if rod_instance.current_durability is not None and rod_instance.current_durability > 0:
-                    rod_instance.current_durability -= 1
-                    self.inventory_repo.update_rod_instance(rod_instance)
-
-                # 无论是刚减为0，还是之前就是0，都进行一次破损检查与卸下，保证一致性
-                if rod_instance.current_durability is not None and rod_instance.current_durability <= 0:
-                    # 鱼竿损坏，自动卸下（同步 user 与实例 is_equipped 状态）
-                    user.equipped_rod_instance_id = None
-                    # 统一使用仓储方法重置装备状态，避免前端/状态页不一致
-                    self.inventory_repo.set_equipment_status(
-                        user.user_id,
-                        rod_instance_id=None,
-                        accessory_instance_id=user.equipped_accessory_instance_id
-                    )
+                    rod_durability = rod_instance.current_durability - 1
+                else:
+                    rod_durability = rod_instance.current_durability
+                if rod_durability is not None and rod_durability <= 0:
+                    rod_broken = True
                     rod_template = self.item_template_repo.get_rod_by_id(rod_instance.rod_id)
                     rod_name = rod_template.name if rod_template else "鱼竿"
                     equipment_broken_messages.append(f"⚠️ 您的{rod_name}已损坏，自动卸下！")
-        
-        # 判断用户的饰品是否存在（饰品暂时不消耗耐久度）
+
+        accessory_instance_id = None
         if user.equipped_accessory_instance_id:
             accessory_instance = self.inventory_repo.get_user_accessory_instance_by_id(user.user_id, user.equipped_accessory_instance_id)
-            if not accessory_instance:
-                user.equipped_accessory_instance_id = None
+            if accessory_instance:
+                accessory_instance_id = accessory_instance.accessory_instance_id
 
-        # 更新用户信息
-        self.user_repo.update(user)
-
-        # 记录日志
-        record = FishingRecord(
-            record_id=0, # DB自增
+        settled_at = get_now()
+        settled = self.inventory_repo.settle_fishing_catch(
             user_id=user.user_id,
             fish_id=fish_template.fish_id,
+            total_catches=total_catches,
+            quality_level=quality_level,
             weight=weight,
-            value=value,
-            timestamp=user.last_fishing_time,
-            rod_instance_id=user.equipped_rod_instance_id,
-            accessory_instance_id=user.equipped_accessory_instance_id,
-            bait_id=user.current_bait_id
+            base_value=value,
+            earned_value=fish_template.base_value * total_catches * (1 + quality_level),
+            fishing_cost=fishing_cost,
+            fish_pond_capacity=user.fish_pond_capacity,
+            timestamp=settled_at,
+            zone_id=user.fishing_zone_id,
+            is_rare=fish_template.rarity >= 4,
+            rod_instance_id=rod_instance_id,
+            rod_durability=rod_durability,
+            rod_broken=rod_broken,
+            accessory_instance_id=accessory_instance_id,
+            bait_id=user.current_bait_id,
         )
-        self.log_repo.add_fishing_record(record)
+        if not settled:
+            return {"success": False, "message": f"金币不足，需要 {fishing_cost} 金币。"}
 
         # 7. 构建成功返回结果
         result = {
@@ -862,7 +817,7 @@ class FishingService:
             self.log_repo.add_log(user_id, "zone_entry", f"使用通行证进入 {zone.name}")
 
         user.fishing_zone_id = zone.id
-        self.user_repo.update(user)
+        self.user_repo.set_fishing_zone(user_id, zone.id)
 
         # 构建成功消息
         success_message = f"✅已将钓鱼区域设置为 {zone.name}"
@@ -885,22 +840,31 @@ class FishingService:
         
         logger.info(f"[税收-{execution_id}] 开始检查每日资产税（执行ID: {execution_id}）")
         
-        threshold = tax_config.get("threshold", 1000000)
-        step_coins = tax_config.get("step_coins", 1000000)
-        step_rate = tax_config.get("step_rate", 0.01)
-        min_rate = tax_config.get("min_rate", 0.001)
-        max_rate = tax_config.get("max_rate", 0.2)
+        threshold = int(tax_config.get("threshold", 1000000))
+        step_coins = max(int(tax_config.get("step_coins", 1000000)), 1)
+        step_rate = float(tax_config.get("step_rate", 0.01))
+        min_rate = float(tax_config.get("min_rate", 0.001))
+        max_rate = float(tax_config.get("max_rate", 0.2))
+        asset_scope = tax_config.get("asset_scope", "wallet")
+        deduct_scope = tax_config.get("deduct_scope", "wallet")
+        taxable_mode = tax_config.get("taxable_mode", "total")
         
-        logger.info(f"[税收-{execution_id}] 税收配置：起征点={threshold}, 步长={step_coins}, 步长税率={step_rate*100}%, 最小税率={min_rate*100}%, 最大税率={max_rate*100}%")
+        logger.info(
+            f"[税收-{execution_id}] 税收配置：起征点={threshold}, 资产范围={asset_scope}, 扣款范围={deduct_scope}, "
+            f"计税模式={taxable_mode}, 步长={step_coins}, 步长税率={step_rate*100}%, "
+            f"最小税率={min_rate*100}%, 最大税率={max_rate*100}%"
+        )
 
-        high_value_users = self.user_repo.get_high_value_users(threshold)
-        logger.info(f"[税收-{execution_id}] 检测到 {len(high_value_users)} 个达到税收阈值的用户，开始逐个检查")
+        tax_subjects = self._get_daily_tax_subjects(threshold, asset_scope)
+        logger.info(f"[税收-{execution_id}] 检测到 {len(tax_subjects)} 个达到税收阈值的用户，开始逐个检查")
         
         total_tax_collected = 0
         taxed_user_count = 0
         skipped_user_count = 0
 
-        for user in high_value_users:
+        for subject in tax_subjects:
+            user = subject["user"]
+            assessed_assets = int(subject.get("assessed_assets", user.coins))
             # 检查该用户今天是否已经被征收过税
             if self.log_repo.has_user_daily_tax_today(user.user_id, self.daily_reset_hour):
                 logger.debug(f"[税收-{execution_id}] 用户 {user.user_id} 今日已缴税，跳过")
@@ -909,35 +873,74 @@ class FishingService:
             
             tax_rate = 0.0
             # 根据资产确定税率
-            if user.coins >= threshold:
-                steps = (user.coins - threshold) // step_coins
+            if assessed_assets >= threshold:
+                steps = (assessed_assets - threshold) // step_coins
                 tax_rate = min_rate + steps * step_rate
                 if tax_rate > max_rate:
                     tax_rate = max_rate
-            min_tax_amount = 1
-            if tax_rate > 0:
-                tax_amount = max(int(user.coins * tax_rate), min_tax_amount)
-                original_coins = user.coins
-                user.coins -= tax_amount
+            taxable_base = assessed_assets
+            if taxable_mode == "excess":
+                taxable_base = max(assessed_assets - threshold, 0)
 
-                self.user_repo.update(user)
+            min_tax_amount = 1
+            if tax_rate > 0 and taxable_base > 0:
+                requested_tax_amount = max(int(taxable_base * tax_rate), min_tax_amount)
+                tax_amount, balance_after, debt_added = self._collect_daily_tax(
+                    user.user_id,
+                    requested_tax_amount,
+                    deduct_scope,
+                )
+                if tax_amount <= 0 and debt_added <= 0:
+                    logger.warning(f"[税收-{execution_id}] 用户 {user.user_id} 可扣资产不足且未产生欠税，跳过")
+                    continue
 
                 tax_log = TaxRecord(
                     tax_id=0, # DB会自增
                     user_id=user.user_id,
                     tax_amount=tax_amount,
                     tax_rate=tax_rate,
-                    original_amount=original_coins,
-                    balance_after=user.coins,
+                    original_amount=assessed_assets,
+                    balance_after=balance_after,
                     timestamp=get_now(),
                     tax_type="每日资产税"
                 )
                 self.log_repo.add_tax_record(tax_log)
+                if debt_added > 0:
+                    debt_log = TaxRecord(
+                        tax_id=0,
+                        user_id=user.user_id,
+                        tax_amount=debt_added,
+                        tax_rate=tax_rate,
+                        original_amount=assessed_assets,
+                        balance_after=balance_after,
+                        timestamp=get_now(),
+                        tax_type="每日资产税欠税",
+                    )
+                    self.log_repo.add_tax_record(debt_log)
                 
                 total_tax_collected += tax_amount
                 taxed_user_count += 1
         
         logger.info(f"[税收-{execution_id}] 每日资产税执行完成，征税 {taxed_user_count} 人，跳过 {skipped_user_count} 人（已缴税），总计 {total_tax_collected} 金币")
+
+    def _get_daily_tax_subjects(self, threshold: int, asset_scope: str):
+        if asset_scope == "wallet" or not self.bank_repo:
+            return [
+                {"user": user, "assessed_assets": user.coins}
+                for user in self.user_repo.get_high_value_users(threshold)
+            ]
+        return self.bank_repo.get_daily_tax_subjects(threshold, asset_scope)
+
+    def _collect_daily_tax(self, user_id: str, tax_amount: int, deduct_scope: str):
+        if deduct_scope == "wallet" or not self.bank_repo:
+            actual_tax, remaining_coins = self.user_repo.deduct_coins_up_to(
+                user_id, tax_amount
+            )
+            debt_added = max(tax_amount - actual_tax, 0)
+            if debt_added > 0 and self.bank_repo:
+                self.bank_repo.add_tax_debt(user_id, debt_added)
+            return actual_tax, remaining_coins, debt_added
+        return self.bank_repo.collect_daily_tax(user_id, tax_amount, deduct_scope)
 
     def enforce_zone_pass_requirements_for_all_users(self) -> None:
         """
@@ -970,7 +973,7 @@ class FishingService:
                 if current_quantity < 1:
                     # 移动到 1 号区域
                     user.fishing_zone_id = 1
-                    self.user_repo.update(user)
+                    self.user_repo.set_fishing_zone(user_id, 1)
                     
                     # 记录日志
                     try:
@@ -1056,6 +1059,7 @@ class FishingService:
             return
 
         self.auto_fishing_running = True
+        self._auto_fishing_stop_event.clear()
         self.auto_fishing_thread = threading.Thread(target=self._auto_fishing_loop, daemon=True)
         self.auto_fishing_thread.start()
         logger.info("自动钓鱼线程已启动")
@@ -1063,9 +1067,13 @@ class FishingService:
     def stop_auto_fishing_task(self):
         """停止自动钓鱼的后台线程。"""
         self.auto_fishing_running = False
+        self._auto_fishing_stop_event.set()
         if self.auto_fishing_thread:
-            self.auto_fishing_thread.join(timeout=1.0)
-            logger.info("自动钓鱼线程已停止")
+            self.auto_fishing_thread.join(timeout=5.0)
+            if self.auto_fishing_thread.is_alive():
+                logger.warning("自动钓鱼线程未能在 5 秒内停止")
+            else:
+                logger.info("自动钓鱼线程已停止")
 
     def start_daily_tax_task(self):
         """启动每日税收的独立后台线程。"""
@@ -1077,6 +1085,7 @@ class FishingService:
 
             logger.info("正在启动每日税收线程...")
             self.tax_running = True
+            self._tax_stop_event.clear()
             self.tax_thread = threading.Thread(target=self._daily_tax_loop, daemon=True)
             self.tax_thread.start()
             logger.info(f"税收线程已启动，每日重置时间点：{self.daily_reset_hour}点")
@@ -1084,9 +1093,13 @@ class FishingService:
     def stop_daily_tax_task(self):
         """停止每日税收的后台线程。"""
         self.tax_running = False
+        self._tax_stop_event.set()
         if self.tax_thread:
-            self.tax_thread.join(timeout=1.0)
-            logger.info("税收线程已停止")
+            self.tax_thread.join(timeout=5.0)
+            if self.tax_thread.is_alive():
+                logger.warning("税收线程未能在 5 秒内停止")
+            else:
+                logger.info("税收线程已停止")
 
     def _daily_tax_loop(self):
         """每日税收独立循环任务，由后台线程执行。"""
@@ -1103,7 +1116,11 @@ class FishingService:
             try:
                 # 第一次检查不sleep，之后每小时检查一次
                 if not first_check:
-                    time.sleep(3600)
+                    if self._tax_stop_event.wait(3600):
+                        break
+
+                if not self.tax_running:
+                    break
                 
                 # 检查是否到达每日重置时间点
                 current_reset_time = get_last_reset_time(self.daily_reset_hour)
@@ -1137,15 +1154,79 @@ class FishingService:
                 logger.error(f"[税收线程] 出错: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
-                time.sleep(600)  # 出错后等待10分钟再重试
+                if self._tax_stop_event.wait(600):
+                    break
         
+        self._close_thread_connections()
         logger.info("[税收线程] 线程循环已退出")
+
+    def _close_thread_connections(self) -> None:
+        """关闭当前后台线程在常用仓储中创建的线程本地连接。"""
+        for name in ("user_repo", "inventory_repo", "log_repo", "buff_repo"):
+            repo = getattr(self, name, None)
+            close = getattr(repo, "close_connection", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as e:
+                    logger.warning(f"关闭后台线程数据库连接失败: {e}")
+
+    def _process_auto_fishing_user(self, user_id: str, cooldown: float) -> None:
+        """处理单个自动钓鱼用户，异常由循环按用户隔离。"""
+        user = self.user_repo.get_by_id(user_id)
+        if not user:
+            return
+
+        now_ts = get_now().timestamp()
+        last_ts = 0
+        if user.last_fishing_time and user.last_fishing_time.year > 1:
+            last_ts = user.last_fishing_time.timestamp()
+        elif user.last_fishing_time and user.last_fishing_time.year <= 1:
+            user.last_fishing_time = get_now() - timedelta(seconds=cooldown)
+            last_ts = user.last_fishing_time.timestamp()
+
+        effective_cooldown = cooldown
+        equipped_accessory = self.inventory_repo.get_user_equipped_accessory(user_id)
+        if equipped_accessory:
+            accessory_template = self.item_template_repo.get_accessory_by_id(
+                equipped_accessory.accessory_id
+            )
+            if accessory_template and accessory_template.name == "海洋之心":
+                effective_cooldown /= 2
+        if now_ts - last_ts < effective_cooldown:
+            return
+
+        zone = self.inventory_repo.get_zone_by_id(user.fishing_zone_id)
+        if not zone:
+            return
+        fishing_cost = zone.fishing_cost
+        if not user.can_afford(fishing_cost):
+            self.user_repo.set_auto_fishing_enabled(user_id, False)
+            logger.warning(
+                f"用户 {user_id} 金币不足（需要 {fishing_cost} 金币），已关闭自动钓鱼"
+            )
+            return
+
+        result = self.go_fish(user_id)
+        if result and not result.get("success") and "已自动传送回" in result.get("message", ""):
+            try:
+                if self._notifier:
+                    self._notifier(user_id, f"🌅 {result['message']}")
+            except Exception:
+                pass
+
+        if result and result.get("equipment_broken_messages"):
+            for msg in result["equipment_broken_messages"]:
+                try:
+                    if self._notifier:
+                        self._notifier(user_id, msg)
+                except Exception:
+                    pass
 
     def _auto_fishing_loop(self):
         """自动钓鱼循环任务，由后台线程执行。"""
         fishing_config = self.config.get("fishing", {})
         cooldown = fishing_config.get("cooldown_seconds", 180)
-        cost = fishing_config.get("cost", 10)
 
         while self.auto_fishing_running:
             try:
@@ -1163,79 +1244,29 @@ class FishingService:
                 auto_users_ids = self.user_repo.get_all_user_ids(auto_fishing_only=True)
 
                 for user_id in auto_users_ids:
-                    user = self.user_repo.get_by_id(user_id)
-                    if not user:
-                        continue
-
-                    # 检查CD
-                    now_ts = get_now().timestamp()
-                    last_ts = 0
-                    if user.last_fishing_time and user.last_fishing_time.year > 1:
-                        last_ts = user.last_fishing_time.timestamp()
-                    elif user.last_fishing_time and user.last_fishing_time.year <= 1:
-                        # 若 last_fishing_time 被重置为极早时间，将时间设为当前时间减去冷却时间，
-                        # 这样下一轮自动钓鱼就能正常工作了
-                        cooldown = fishing_config.get("cooldown_seconds", 180)
-                        user.last_fishing_time = get_now() - timedelta(seconds=cooldown)
-                        self.user_repo.update(user)
-                        last_ts = user.last_fishing_time.timestamp()
-                    # 检查用户是否装备了海洋之心
-                    _cooldown = cooldown
-                    equipped_accessory = self.inventory_repo.get_user_equipped_accessory(user_id)
-                    if equipped_accessory:
-                        accessory_template = self.item_template_repo.get_accessory_by_id(equipped_accessory.accessory_id)
-                        if accessory_template and accessory_template.name == "海洋之心":
-                            # 海洋之心装备时，CD时间减半
-                            _cooldown /= 2
-                    if now_ts - last_ts < _cooldown:
-                        continue # CD中，跳过
-
-                    # 检查成本（从区域配置中读取）
-                    zone = self.inventory_repo.get_zone_by_id(user.fishing_zone_id)
-                    if not zone:
-                        continue
-                    fishing_cost = zone.fishing_cost
-                    if not user.can_afford(fishing_cost):
-                        # 金币不足，关闭其自动钓鱼
-                        user.auto_fishing_enabled = False
-                        self.user_repo.update(user)
-                        logger.warning(f"用户 {user_id} 金币不足（需要 {fishing_cost} 金币），已关闭自动钓鱼")
-                        continue
-
-                    # 执行钓鱼
-                    result = self.go_fish(user_id)
-                    
-                    # 检查是否因为区域关闭被传送
-                    if result and not result.get("success") and "已自动传送回" in result.get("message", ""):
-                        # 区域关闭，给用户发送通知
-                        try:
-                            if self._notifier:
-                                self._notifier(user_id, f"🌅 {result['message']}")
-                        except Exception:
-                            # 通知失败不影响主流程
-                            pass
-                    
-                    # 自动钓鱼时，如装备损坏，尝试进行消息推送
-                    if result and result.get("equipment_broken_messages"):
-                        for msg in result["equipment_broken_messages"]:
-                            try:
-                                if self._notifier:
-                                    self._notifier(user_id, msg)
-                            except Exception:
-                                # 通知失败不影响主流程
-                                pass
-                    # if result['success']:
-                    #     fish = result["fish"]
-                    #     logger.info(f"用户 {user_id} 自动钓鱼成功: {fish['name']}")
-                    # else:
-                    #      logger.info(f"用户 {user_id} 自动钓鱼失败: {result['message']}")
+                    try:
+                        self._process_auto_fishing_user(user_id, cooldown)
+                    except Exception as e:
+                        logger.error(f"用户 {user_id} 自动钓鱼任务出错: {e}", exc_info=True)
 
                 # 每轮检查间隔
-                time.sleep(40)
+                stop_event = getattr(self, "_auto_fishing_stop_event", None)
+                if stop_event is not None:
+                    if stop_event.wait(40):
+                        break
+                else:
+                    time.sleep(40)
 
             except Exception as e:
                 logger.error(f"自动钓鱼任务出错: {e}")
                 # 打印堆栈信息
                 import traceback
                 logger.error(traceback.format_exc())
-                time.sleep(60)
+                stop_event = getattr(self, "_auto_fishing_stop_event", None)
+                if stop_event is not None:
+                    if stop_event.wait(60):
+                        break
+                else:
+                    time.sleep(60)
+
+        self._close_thread_connections()

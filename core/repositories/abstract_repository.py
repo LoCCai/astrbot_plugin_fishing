@@ -31,6 +31,22 @@ class AbstractUserRepository(ABC):
     # 更新用户信息
     @abstractmethod
     def update(self, user: User) -> None: pass
+    # 原子切换自动钓鱼状态，避免整行更新覆盖并发修改
+    @abstractmethod
+    def toggle_auto_fishing(self, user_id: str) -> Optional[bool]: pass
+    @abstractmethod
+    def set_auto_fishing_enabled(self, user_id: str, enabled: bool) -> bool: pass
+    # 原子记录一次未钓获，并扣除本次成本
+    @abstractmethod
+    def record_failed_fishing(self, user_id: str, cost: int, timestamp: datetime) -> bool: pass
+    @abstractmethod
+    def update_bait_state(
+        self, user_id: str, bait_id: Optional[int], bait_start_time: Optional[datetime]
+    ) -> bool: pass
+    @abstractmethod
+    def set_fishing_zone(self, user_id: str, zone_id: int) -> bool: pass
+    @abstractmethod
+    def deduct_coins_up_to(self, user_id: str, amount: int) -> tuple[int, int]: pass
     # 获取所有用户ID
     @abstractmethod
     def get_all_user_ids(self, auto_fishing_only: bool = False) -> List[str]: pass
@@ -229,9 +245,25 @@ class AbstractInventoryRepository(ABC):
     # 根据等级获取水族箱升级配置
     @abstractmethod
     def get_aquarium_upgrade_by_level(self, level: int) -> Optional[AquariumUpgrade]: pass
-    # 卖出所有鱼，每种保留一条
+    # 原子卖鱼并增加金币
     @abstractmethod
-    def sell_fish_keep_one(self, user_id: str) -> int: pass
+    def sell_fish_atomic(
+        self,
+        user_id: str,
+        rarities: Optional[List[int]] = None,
+        keep_one: bool = False,
+    ) -> Dict[str, Any]: pass
+    # 原子出售鱼和指定的未锁定、未装备物品
+    @abstractmethod
+    def sell_everything_atomic(
+        self,
+        user_id: str,
+        rod_prices: Dict[int, int],
+        accessory_prices: Dict[int, int],
+    ) -> Dict[str, int]: pass
+    # 原子提交一次成功钓鱼涉及的库存、统计、装备、配额和日志
+    @abstractmethod
+    def settle_fishing_catch(self, **settlement: Any) -> bool: pass
     # 获取用户的鱼饵库存
     @abstractmethod
     def get_user_bait_inventory(self, user_id: str) -> Dict[int, int]: pass
