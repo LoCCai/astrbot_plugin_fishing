@@ -174,8 +174,8 @@ class FishingPlugin(Star):
             "tax": {
                 "is_tax": self.is_tax,
                 "threshold": self.threshold,
-                "asset_scope": tax_config.get("asset_scope", "wallet"),
-                "deduct_scope": tax_config.get("deduct_scope", "wallet"),
+                "asset_scope": tax_config.get("asset_scope", "wallet_bank"),
+                "deduct_scope": tax_config.get("deduct_scope", "wallet_bank"),
                 "taxable_mode": tax_config.get("taxable_mode", "total"),
                 "step_coins": self.step_coins,
                 "step_rate": self.step_rate,

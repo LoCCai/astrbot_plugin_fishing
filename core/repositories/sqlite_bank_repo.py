@@ -4,7 +4,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from astrbot.api import logger
 
-from ..domain.bank_models import BankAccount, BankFixedDeposit, BankWithdrawReservation
+from ..domain.bank_models import (
+    BankAccount,
+    BankFixedDeposit,
+    BankWithdrawReservation,
+    calculate_early_withdraw_penalty,
+    calculate_withdraw_fee,
+)
 from ..domain.models import User
 
 
@@ -235,9 +241,10 @@ class SqliteBankRepository:
         self,
         user_id: str,
         amount: int,
-        fee_amount: int,
         reset_date: str,
-    ) -> Tuple[bool, str, Optional[BankAccount], int, int]:
+        free_limit: int,
+        fee_rate: float,
+    ) -> Tuple[bool, str, Optional[BankAccount], int, int, int]:
         with self._connect() as conn:
             cursor = conn.cursor()
             try:
@@ -246,19 +253,24 @@ class SqliteBankRepository:
                 row = cursor.fetchone()
                 if not row:
                     conn.rollback()
-                    return False, "用户不存在，请先注册", None, 0, 0
+                    return False, "用户不存在，请先注册", None, 0, 0, 0
 
                 self._ensure_account(cursor, user_id)
                 self._reset_daily_withdrawal_with_cursor(cursor, user_id, reset_date)
                 account = self._get_account_with_cursor(cursor, user_id)
                 if self._available_balance(account) < amount:
                     conn.rollback()
-                    return False, "银行可用余额不足", account, row["coins"], 0
+                    return False, "银行可用余额不足", account, row["coins"], 0, 0
 
+                # 手续费必须在事务内按刚重置过的 today_withdrawn 计算，
+                # 调用方事务外读到的额度可能已经过期。
+                fee_amount = calculate_withdraw_fee(
+                    account.today_withdrawn, amount, free_limit, fee_rate
+                )
                 net_amount = amount - fee_amount
                 if net_amount < 0:
                     conn.rollback()
-                    return False, "手续费不能超过取款金额", account, row["coins"], 0
+                    return False, "手续费不能超过取款金额", account, row["coins"], 0, 0
                 net_amount, debt_paid, _ = self._collect_tax_debt_from_amount(cursor, user_id, net_amount)
 
                 cursor.execute("""
@@ -274,7 +286,7 @@ class SqliteBankRepository:
                 wallet_after = cursor.fetchone()["coins"]
                 account = self._get_account_with_cursor(cursor, user_id)
                 conn.commit()
-                return True, "ok", account, wallet_after, debt_paid
+                return True, "ok", account, wallet_after, fee_amount, debt_paid
             except Exception as e:
                 conn.rollback()
                 logger.error(f"银行取款失败: {e}")
@@ -338,6 +350,8 @@ class SqliteBankRepository:
         self,
         user_id: str,
         reset_date: str,
+        free_limit: int,
+        fee_rate: float,
     ) -> Tuple[bool, str, Optional[BankWithdrawReservation], Optional[BankAccount], int, int]:
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -365,7 +379,16 @@ class SqliteBankRepository:
                     conn.rollback()
                     return False, "银行余额不足，无法完成预约取款", reservation, account, user_row["coins"], 0
 
-                net_amount = reservation.amount - reservation.fee_amount
+                # 预约时存的 fee_amount 只是下单当时的预估。免费额度按天重置，
+                # 确认时必须按当前 today_withdrawn 重算，否则同一份免费额度会被
+                # 预约和普通取款各用一次。
+                fee_amount = calculate_withdraw_fee(
+                    account.today_withdrawn, reservation.amount, free_limit, fee_rate
+                )
+                net_amount = reservation.amount - fee_amount
+                if net_amount < 0:
+                    conn.rollback()
+                    return False, "手续费不能超过取款金额", reservation, account, user_row["coins"], 0
                 net_amount, debt_paid, _ = self._collect_tax_debt_from_amount(cursor, user_id, net_amount)
                 locked_deduction = min(account.locked_balance or 0, reservation.amount)
                 cursor.execute("""
@@ -380,9 +403,9 @@ class SqliteBankRepository:
                 cursor.execute("UPDATE users SET max_coins = coins WHERE user_id = ? AND coins > max_coins", (user_id,))
                 cursor.execute("""
                     UPDATE bank_withdraw_reservations
-                    SET status = 'completed', updated_at = ?
+                    SET status = 'completed', fee_amount = ?, updated_at = ?
                     WHERE reservation_id = ?
-                """, (now, reservation.reservation_id))
+                """, (fee_amount, now, reservation.reservation_id))
                 cursor.execute("SELECT coins FROM users WHERE user_id = ?", (user_id,))
                 wallet_after = cursor.fetchone()["coins"]
                 account = self._get_account_with_cursor(cursor, user_id)
@@ -809,7 +832,7 @@ class SqliteBankRepository:
                 raise
 
     def cancel_fixed_deposit(
-        self, user_id: str, deposit_id: int, penalty_amount: int
+        self, user_id: str, deposit_id: int, penalty_rate: float, penalty_threshold: int
     ) -> Tuple[bool, str, Optional[BankFixedDeposit], Optional[BankAccount], int, int]:
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -825,7 +848,10 @@ class SqliteBankRepository:
                     conn.rollback()
                     return False, "未找到可提前取出的定期存款", None, None, 0, 0
 
-                penalty_amount = max(0, min(penalty_amount, deposit.principal))
+                # 违约金按事务内读到的本金计算，避免调用方先查一次再传值。
+                penalty_amount = calculate_early_withdraw_penalty(
+                    deposit.principal, penalty_rate, penalty_threshold
+                )
                 payout = deposit.principal - penalty_amount
                 payout, debt_paid, _ = self._collect_tax_debt_from_amount(cursor, user_id, payout)
                 now = datetime.now()

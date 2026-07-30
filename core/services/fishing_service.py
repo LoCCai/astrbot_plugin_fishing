@@ -845,8 +845,8 @@ class FishingService:
         step_rate = float(tax_config.get("step_rate", 0.01))
         min_rate = float(tax_config.get("min_rate", 0.001))
         max_rate = float(tax_config.get("max_rate", 0.2))
-        asset_scope = tax_config.get("asset_scope", "wallet")
-        deduct_scope = tax_config.get("deduct_scope", "wallet")
+        asset_scope = tax_config.get("asset_scope", "wallet_bank")
+        deduct_scope = tax_config.get("deduct_scope", "wallet_bank")
         taxable_mode = tax_config.get("taxable_mode", "total")
         
         logger.info(

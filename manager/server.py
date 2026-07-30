@@ -25,8 +25,8 @@ admin_bp = Blueprint(
 DEFAULT_TAX_CONFIG = {
     "is_tax": True,
     "threshold": 1_000_000,
-    "asset_scope": "wallet",
-    "deduct_scope": "wallet",
+    "asset_scope": "wallet_bank",
+    "deduct_scope": "wallet_bank",
     "taxable_mode": "total",
     "step_coins": 100_000,
     "step_rate": 0.01,
@@ -1025,8 +1025,8 @@ async def manage_tax():
 async def update_tax_settings():
     form = await request.form
     try:
-        asset_scope = form.get("asset_scope", "wallet")
-        deduct_scope = form.get("deduct_scope", "wallet")
+        asset_scope = form.get("asset_scope", "wallet_bank")
+        deduct_scope = form.get("deduct_scope", "wallet_bank")
         taxable_mode = form.get("taxable_mode", "total")
         if asset_scope not in ASSET_SCOPE_LABELS:
             raise ValueError("无效的资产统计范围")

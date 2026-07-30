@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Dict, Any
 
+from ..domain.bank_models import calculate_withdraw_fee
 from ..domain.models import TaxRecord
 from ..utils import get_last_reset_time, get_now
 
@@ -73,12 +74,11 @@ class BankService:
             return None, {"success": False, "message": "用户不存在，请先注册"}
         return user, None
 
-    def _calculate_fee(self, account, amount: int) -> int:
-        free_limit = self._daily_free_limit()
-        already_withdrawn = max(account.today_withdrawn, 0)
-        free_remaining = max(free_limit - already_withdrawn, 0)
-        taxable_amount = max(amount - free_remaining, 0)
-        return int(taxable_amount * self._withdraw_fee_rate())
+    def _estimate_fee(self, account, amount: int) -> int:
+        """仅用于展示的手续费预估；实际扣费一律由仓储在事务内重算。"""
+        return calculate_withdraw_fee(
+            account.today_withdrawn, amount, self._daily_free_limit(), self._withdraw_fee_rate()
+        )
 
     def get_overview(self, user_id: str) -> Dict[str, Any]:
         if not self.is_enabled():
@@ -143,10 +143,12 @@ class BankService:
                 ),
             }
 
-        account = self._refresh_account(user_id)
-        fee_amount = self._calculate_fee(account, amount)
-        success, message, account, wallet_after, debt_paid = self.bank_repo.withdraw(
-            user_id, amount, fee_amount, self._reset_date()
+        success, message, account, wallet_after, fee_amount, debt_paid = self.bank_repo.withdraw(
+            user_id,
+            amount,
+            self._reset_date(),
+            self._daily_free_limit(),
+            self._withdraw_fee_rate(),
         )
         if not success:
             return {"success": False, "message": message}
@@ -181,7 +183,7 @@ class BankService:
                 ),
             }
         account = self._refresh_account(user_id)
-        fee_amount = self._calculate_fee(account, amount)
+        fee_amount = self._estimate_fee(account, amount)
         ready_at = datetime.now() + timedelta(hours=self._reservation_delay_hours())
         success, message, reservation = self.bank_repo.create_reservation(
             user_id,
@@ -197,7 +199,7 @@ class BankService:
             "message": (
                 f"✅ 大额取款预约成功！\n"
                 f"💰 预约金额：{amount:,} 金币\n"
-                f"💸 预计手续费：{fee_amount:,} 金币\n"
+                f"💸 预计手续费：{fee_amount:,} 金币（确认时按当日剩余免费额度重算）\n"
                 f"⏱️ 可确认时间：{ready_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"💡 到时使用：/钓鱼银行 确认预约"
             ),
@@ -345,13 +347,11 @@ class BankService:
         _, error = self._require_user(user_id)
         if error:
             return error
-        deposit_candidates = self.bank_repo.get_fixed_deposits(user_id, limit=50)
-        target = next((d for d in deposit_candidates if d.deposit_id == deposit_id and d.status == "active"), None)
-        penalty_amount = 0
-        if target and target.principal > self._early_withdraw_penalty_threshold():
-            penalty_amount = int(target.principal * self._early_withdraw_penalty_rate())
         success, message, deposit, account, penalty_amount, debt_paid = self.bank_repo.cancel_fixed_deposit(
-            user_id, deposit_id, penalty_amount
+            user_id,
+            deposit_id,
+            self._early_withdraw_penalty_rate(),
+            self._early_withdraw_penalty_threshold(),
         )
         if not success:
             return {"success": False, "message": message}
@@ -394,7 +394,10 @@ class BankService:
                 }
             return cancel_result
         success, message, reservation, account, wallet_after, debt_paid = self.bank_repo.complete_pending_reservation(
-            user_id, self._reset_date()
+            user_id,
+            self._reset_date(),
+            self._daily_free_limit(),
+            self._withdraw_fee_rate(),
         )
         if not success:
             if reservation and message == "预约尚未到可取时间":

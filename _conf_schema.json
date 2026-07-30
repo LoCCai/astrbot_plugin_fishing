@@ -36,14 +36,14 @@
       "asset_scope": {
         "description": "每日资产税统计范围",
         "type": "string",
-        "hint": "wallet=只统计钱包；wallet_bank=钱包+银行活期；wallet_bank_fixed=钱包+银行活期+进行中定期本金",
-        "default": "wallet"
+        "hint": "wallet=只统计钱包，银行余额免税，玩家可存入银行规避资产税；wallet_bank=钱包+银行活期（默认）；wallet_bank_fixed=钱包+银行活期+进行中定期本金",
+        "default": "wallet_bank"
       },
       "deduct_scope": {
         "description": "每日资产税扣款来源",
         "type": "string",
-        "hint": "wallet=只从钱包扣；bank=只从银行活期可用余额扣；wallet_bank=钱包优先，不足再扣银行活期可用余额",
-        "default": "wallet"
+        "hint": "wallet=只从钱包扣；bank=只从银行活期可用余额扣；wallet_bank=钱包优先，不足再扣银行活期可用余额（默认）",
+        "default": "wallet_bank"
       },
       "taxable_mode": {
         "description": "每日资产税计税模式",
