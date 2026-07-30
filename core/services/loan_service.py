@@ -64,6 +64,12 @@ class LoanService:
         if principal <= 0:
             return False, "❌ 借款金额必须大于0", None
 
+        if not self.user_repo.check_exists(lender_id):
+            return False, "❌ 放贷人账户不存在，请先注册", None
+
+        if not self.user_repo.check_exists(borrower_id):
+            return False, "❌ 借款人账户不存在", None
+
         # 使用默认利率或自定义利率
         if interest_rate is None:
             interest_rate = self.default_interest_rate

@@ -32,6 +32,18 @@ class SqliteLoanRepository:
             self._local.connection = conn
         return conn
 
+    def close_connection(self) -> None:
+        """Close the connection owned by the current thread."""
+        conn = getattr(self._local, "connection", None)
+        if conn is None:
+            return
+        try:
+            if conn.in_transaction:
+                conn.rollback()
+            conn.close()
+        finally:
+            delattr(self._local, "connection")
+
     def _row_to_loan(self, row: sqlite3.Row) -> Optional[Loan]:
         """将数据库行转换为Loan对象"""
         if not row:
@@ -87,23 +99,21 @@ class SqliteLoanRepository:
 
     def create_loan(self, loan: Loan) -> int:
         """创建借条"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        now = datetime.now()
-        cursor.execute("""
-            INSERT INTO loans (
-                lender_id, borrower_id, principal, interest_rate,
-                borrowed_at, due_amount, repaid_amount, status,
-                due_date, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            loan.lender_id, loan.borrower_id, loan.principal, loan.interest_rate,
-            loan.borrowed_at or now, loan.due_amount, loan.repaid_amount, loan.status,
-            loan.due_date, now, now
-        ))
-        conn.commit()
-        return cursor.lastrowid
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            now = datetime.now()
+            cursor.execute("""
+                INSERT INTO loans (
+                    lender_id, borrower_id, principal, interest_rate,
+                    borrowed_at, due_amount, repaid_amount, status,
+                    due_date, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                loan.lender_id, loan.borrower_id, loan.principal, loan.interest_rate,
+                loan.borrowed_at or now, loan.due_amount, loan.repaid_amount, loan.status,
+                loan.due_date, now, now
+            ))
+            return cursor.lastrowid
 
     def get_loan_by_id(self, loan_id: int) -> Optional[Loan]:
         """根据ID获取借条"""
@@ -166,17 +176,14 @@ class SqliteLoanRepository:
 
     def update_loan_repayment(self, loan_id: int, repaid_amount: int, status: str) -> bool:
         """更新还款金额和状态"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            UPDATE loans
-            SET repaid_amount = ?, status = ?, updated_at = ?
-            WHERE loan_id = ?
-        """, (repaid_amount, status, datetime.now(), loan_id))
-        
-        conn.commit()
-        return cursor.rowcount > 0
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE loans
+                SET repaid_amount = ?, status = ?, updated_at = ?
+                WHERE loan_id = ?
+            """, (repaid_amount, status, datetime.now(), loan_id))
+            return cursor.rowcount > 0
 
     def get_all_active_loans(self) -> List[Loan]:
         """获取所有进行中的借条"""

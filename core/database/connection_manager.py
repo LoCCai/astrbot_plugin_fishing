@@ -34,30 +34,31 @@ class DatabaseConnectionManager:
         )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
-        conn.execute("PRAGMA journal_mode = WAL;")  # 使用WAL模式提高并发性能
-        conn.execute("PRAGMA synchronous = NORMAL;")  # 平衡性能和安全
+        # journal_mode 是数据库级设置，由初始化/迁移负责。连接建立时切换模式
+        # 会与正在进行的写事务竞争锁，反而可能让重试尚未开始就失败。
+        conn.execute("PRAGMA synchronous = NORMAL;")
         return conn
     
     @contextmanager
     def get_connection(self):
-        """获取数据库连接的上下文管理器，支持重试机制"""
+        """获取线程本地连接，并确保失败事务不会遗留数据库锁。"""
         conn = self._get_connection()
         try:
             yield conn
         except sqlite3.OperationalError as e:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
             if "database is locked" in str(e).lower():
                 logger.warning(f"数据库锁定，操作无法在超时 ({self.timeout}s) 内完成: {e}")
-            
-            # 发生严重错误时，关闭并移除线程中的无效连接
-            if conn:
-                try:
-                    conn.close()
-                except:
-                    pass
-            if hasattr(self._local, "connection"):
-                delattr(self._local, "connection")
+            self.close_connection()
             raise
         except Exception as e:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
             logger.error(f"数据库操作发生未知错误: {e}")
             raise
     
@@ -65,8 +66,11 @@ class DatabaseConnectionManager:
         """关闭当前线程的数据库连接"""
         if hasattr(self._local, "connection"):
             try:
-                self._local.connection.close()
-            except:
+                conn = self._local.connection
+                if conn.in_transaction:
+                    conn.rollback()
+                conn.close()
+            except sqlite3.Error:
                 pass
             finally:
                 delattr(self._local, "connection")
@@ -79,14 +83,42 @@ class DatabaseConnectionManager:
             params: 查询参数
             fetch: 获取结果的方式 ("none", "one", "all")
         """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            
-            if fetch == "one":
-                return cursor.fetchone()
-            elif fetch == "all":
-                return cursor.fetchall()
-            else:
+        if fetch not in {"none", "one", "all"}:
+            raise ValueError(f"不支持的 fetch 类型: {fetch}")
+
+        for attempt in range(self.max_retries + 1):
+            conn = self._get_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute(query, params)
+
+                if fetch == "one":
+                    return cursor.fetchone()
+                if fetch == "all":
+                    return cursor.fetchall()
+
                 conn.commit()
                 return cursor.lastrowid if cursor.lastrowid else None
+            except sqlite3.OperationalError as e:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+
+                is_locked = "database is locked" in str(e).lower()
+                self.close_connection()
+                if not is_locked or attempt >= self.max_retries:
+                    raise
+
+                delay = self.retry_delay * (attempt + 1)
+                logger.warning(
+                    f"数据库锁定，第 {attempt + 1}/{self.max_retries} 次重试，"
+                    f"等待 {delay:.2f}s: {e}"
+                )
+                time.sleep(delay)
+            except Exception:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise

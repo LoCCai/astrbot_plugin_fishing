@@ -250,40 +250,18 @@ class InventoryService:
             user_id: 用户ID
             keep_one: 是否每种鱼保留一条
         """
-        user = self.user_repo.get_by_id(user_id)
-        if not user:
+        if not self.user_repo.check_exists(user_id):
             return {"success": False, "message": "用户不存在"}
-        # 获取用户的鱼库存
-        fish_inventory = self.inventory_repo.get_fish_inventory(user_id)
-        if not fish_inventory:
-            return {"success": False, "message": "❌ 你没有可以卖出的鱼"}
-        
-        # 计算总价值（高品质鱼双倍价值）
-        total_value = 0
-        sold_details = {"普通": 0, "✨高品质": 0}
-        
-        for item in fish_inventory:
-            fish_template = self.item_template_repo.get_fish_by_id(item.fish_id)
-            if fish_template:
-                # 高品质鱼按双倍价值计算
-                item_value = fish_template.base_value * item.quantity * (1 + item.quality_level)
-                total_value += item_value
-                
-                if item.quality_level == 1:
-                    sold_details["✨高品质"] += item.quantity
-                else:
-                    sold_details["普通"] += item.quantity
-        
-        if keep_one:
-            # 调用仓储方法执行"保留一条"的数据库操作
-            sold_value = self.inventory_repo.sell_fish_keep_one(user_id)
-        else:
-            sold_value = total_value
-            self.inventory_repo.clear_fish_inventory(user_id)
 
-        # 更新用户金币
-        user.coins += sold_value
-        self.user_repo.update(user)
+        sale = self.inventory_repo.sell_fish_atomic(user_id, keep_one=keep_one)
+        sold_value = sale["total_value"]
+        if sold_value <= 0:
+            return {"success": False, "message": "❌ 你没有可以卖出的鱼"}
+
+        sold_details = {"普通": 0, "✨高品质": 0}
+        for detail in sale["details"]:
+            key = "✨高品质" if detail["quality_level"] == 1 else "普通"
+            sold_details[key] += int(detail["quantity"])
 
         # 构建详细消息
         message = f"💰 成功卖出鱼，获得 {sold_value} 金币"
@@ -300,38 +278,18 @@ class InventoryService:
             user_id: 用户ID
             rarity: 鱼的稀有度
         """
-        user = self.user_repo.get_by_id(user_id)
-        if not user:
+        if not self.user_repo.check_exists(user_id):
             return {"success": False, "message": "用户不存在"}
 
-        # 获取用户的鱼库存
-        fish_inventory = self.inventory_repo.get_fish_inventory(user_id)
-        total_value = 0
-        sold_details = {"普通": 0, "✨高品质": 0}
-
-        for item in fish_inventory:
-            fish_id = item.fish_id
-            fish_info = self.item_template_repo.get_fish_by_id(fish_id)
-            if fish_info and fish_info.rarity == rarity:
-                # 计算鱼的总价值（高品质鱼双倍价值）
-                item_value = fish_info.base_value * item.quantity * (1 + item.quality_level)
-                total_value += item_value
-                
-                if item.quality_level == 1:
-                    sold_details["✨高品质"] += item.quantity
-                else:
-                    sold_details["普通"] += item.quantity
-                
-        # 如果没有可卖出的鱼，返回提示
-        if total_value == 0:
+        sale = self.inventory_repo.sell_fish_atomic(user_id, rarities=[rarity])
+        total_value = sale["total_value"]
+        if total_value <= 0:
             return {"success": False, "message": "❌ 没有可卖出的鱼"}
-        
-        # 删除该稀有度的所有鱼（包括普通和高品质）
-        self.inventory_repo.clear_fish_inventory(user_id, rarity=rarity)
-        
-        # 更新用户金币
-        user.coins += total_value
-        self.user_repo.update(user)
+
+        sold_details = {"普通": 0, "✨高品质": 0}
+        for detail in sale["details"]:
+            key = "✨高品质" if detail["quality_level"] == 1 else "普通"
+            sold_details[key] += int(detail["quantity"])
 
         # 构建详细消息
         message = f"💰 成功卖出稀有度 {rarity} 的鱼，获得 {total_value} 金币"
@@ -348,8 +306,7 @@ class InventoryService:
             user_id: 用户ID
             rarities: 鱼的稀有度列表, e.g., [3, 4, 5]
         """
-        user = self.user_repo.get_by_id(user_id)
-        if not user:
+        if not self.user_repo.check_exists(user_id):
             return {"success": False, "message": "用户不存在"}
 
         # 1. 验证并去重稀有度列表
@@ -360,48 +317,31 @@ class InventoryService:
         if not unique_rarities:
             return {"success": False, "message": "❌ 请提供有效的稀有度（1-10之间）"}
 
-        # 2. 获取用户全部鱼类库存
-        fish_inventory = self.inventory_repo.get_fish_inventory(user_id)
-        if not fish_inventory:
-            return {"success": False, "message": "❌ 你的鱼塘是空的，没有任何鱼可以卖"}
-
-        # 3. 计算总价值并记录详情
-        total_value = 0
-        sold_fish_details = {}  # 用于记录每个稀有度卖出的数量和价值
-
-        for item in fish_inventory:
-            fish_template = self.item_template_repo.get_fish_by_id(item.fish_id)
-            if fish_template and fish_template.rarity in unique_rarities:
-                # 高品质鱼按双倍价值计算
-                value = fish_template.base_value * item.quantity * (1 + item.quality_level)
-                total_value += value
-                
-                # 累加售出详情
-                if fish_template.rarity not in sold_fish_details:
-                    sold_fish_details[fish_template.rarity] = {'count': 0, 'value': 0, 'normal': 0, 'high_quality': 0}
-                sold_fish_details[fish_template.rarity]['count'] += item.quantity
-                sold_fish_details[fish_template.rarity]['value'] += value
-                
-                # 分别统计普通和高品质数量
-                if item.quality_level == 1:
-                    sold_fish_details[fish_template.rarity]['high_quality'] += item.quantity
-                else:
-                    sold_fish_details[fish_template.rarity]['normal'] += item.quantity
+        sale = self.inventory_repo.sell_fish_atomic(
+            user_id, rarities=list(unique_rarities)
+        )
+        total_value = sale["total_value"]
+        sold_fish_details = {}
+        for row in sale["details"]:
+            rarity_value = int(row["rarity"])
+            detail = sold_fish_details.setdefault(
+                rarity_value,
+                {"count": 0, "value": 0, "normal": 0, "high_quality": 0},
+            )
+            quantity = int(row["quantity"])
+            detail["count"] += quantity
+            detail["value"] += int(row["value"])
+            if row["quality_level"] == 1:
+                detail["high_quality"] += quantity
+            else:
+                detail["normal"] += quantity
 
         # 4. 如果没有符合条件的鱼，提前返回
         if total_value == 0:
             rarity_str = ", ".join(map(str, sorted(list(unique_rarities))))
             return {"success": False, "message": f"❌ 你没有任何稀有度为【{rarity_str}】的鱼可以出售"}
 
-        # 5. 执行数据库删除操作
-        for rarity in unique_rarities:
-            self.inventory_repo.clear_fish_inventory(user_id, rarity=rarity)
-
-        # 6. 更新用户金币
-        user.coins += total_value
-        self.user_repo.update(user)
-
-        # 7. 构建并返回成功的消息
+        # 5. 构建并返回成功的消息
         rarity_str_sold = ", ".join(map(str, sorted(sold_fish_details.keys())))
         message = f"💰 成功卖出稀有度为【{rarity_str_sold}】的鱼，共获得 {total_value} 金币。\n\n"
         message += "📊 出售详情：\n"
@@ -423,80 +363,39 @@ class InventoryService:
         if not user:
             return {"success": False, "message": "用户不存在"}
 
-        total_value = 0
-        sold_items = {
-            "fish_count": 0,
-            "fish_value": 0,
-            "rod_count": 0,
-            "rod_value": 0,
-            "accessory_count": 0,
-            "accessory_value": 0,
-        }
-
-        # 1. 卖出所有鱼类
-        fish_inventory = self.inventory_repo.get_fish_inventory(user_id)
-        for item in fish_inventory:
-            fish_id = item.fish_id
-            fish_info = self.item_template_repo.get_fish_by_id(fish_id)
-            if fish_info:
-                # 高品质鱼按双倍价值计算
-                fish_value = fish_info.base_value * item.quantity * (1 + item.quality_level)
-                total_value += fish_value
-                sold_items["fish_count"] += item.quantity
-                sold_items["fish_value"] += fish_value
-        
-        # 清空所有鱼类
-        self.inventory_repo.clear_fish_inventory(user_id)
-
-        # 2. 卖出所有未锁定且未装备的鱼竿
+        rod_prices = {}
         rod_instances = self.inventory_repo.get_user_rod_instances(user_id)
         for rod_instance in rod_instances:
-            # 只卖出未锁定且未装备的鱼竿
             if not rod_instance.is_locked and not rod_instance.is_equipped:
                 rod_template = self.item_template_repo.get_rod_by_id(rod_instance.rod_id)
                 if rod_template:
-                    # 计算售价（基础价格 × 精炼倍数）
                     base_price = self.config["sell_prices"]["rod"].get(str(rod_template.rarity), 100)
                     refine_multiplier = self.config["sell_prices"]["refine_multiplier"].get(str(rod_instance.refine_level), 1.0)
-                    rod_price = int(base_price * refine_multiplier)
-                    
-                    total_value += rod_price
-                    sold_items["rod_count"] += 1
-                    sold_items["rod_value"] += rod_price
-                    
-                    # 删除鱼竿实例
-                    self.inventory_repo.delete_rod_instance(rod_instance.rod_instance_id)
+                    rod_prices[rod_instance.rod_instance_id] = int(base_price * refine_multiplier)
 
-        # 3. 卖出所有未锁定且未装备的饰品
+        accessory_prices = {}
         accessory_instances = self.inventory_repo.get_user_accessory_instances(user_id)
         for accessory_instance in accessory_instances:
-            # 只卖出未锁定且未装备的饰品
             if not accessory_instance.is_locked and not accessory_instance.is_equipped:
                 accessory_template = self.item_template_repo.get_accessory_by_id(accessory_instance.accessory_id)
                 if accessory_template:
-                    # 计算售价（基础价格 × 精炼倍数）
                     base_price = self.config["sell_prices"]["accessory"].get(str(accessory_template.rarity), 100)
                     refine_multiplier = self.config["sell_prices"]["refine_multiplier"].get(str(accessory_instance.refine_level), 1.0)
-                    accessory_price = int(base_price * refine_multiplier)
-                    
-                    total_value += accessory_price
-                    sold_items["accessory_count"] += 1
-                    sold_items["accessory_value"] += accessory_price
-                    
-                    # 删除饰品实例
-                    self.inventory_repo.delete_accessory_instance(accessory_instance.accessory_instance_id)
+                    accessory_prices[accessory_instance.accessory_instance_id] = int(base_price * refine_multiplier)
 
-        # 更新用户金币（出售所得）
-        user.coins += total_value
-        self.user_repo.update(user)
+        sold_items = self.inventory_repo.sell_everything_atomic(
+            user_id, rod_prices, accessory_prices
+        )
+        total_value = sold_items["total_value"]
 
-        # 4. 自动消耗“钱袋”类道具（ADD_COINS），并统计获得金币
+        if total_value == 0:
+            return {"success": False, "message": "❌ 没有可出售的物品（可能全部被锁定或仓库为空）"}
+
+        # 原子出售已经更新金币，重新读取以免后续钱袋效果写回旧余额。
+        user = self.user_repo.get_by_id(user_id)
         coins_from_bags = self._auto_consume_money_bags(user)
 
         # 构造详细的结果消息
-        if total_value == 0:
-            return {"success": False, "message": "❌ 没有可出售的物品（可能全部被锁定或仓库为空）"}
-        
         grand_total = total_value + coins_from_bags
         message = f"💥 砸锅卖铁完成！总共获得 {grand_total} 金币\n\n"
         message += "📊 出售详情：\n"

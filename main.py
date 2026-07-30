@@ -1751,4 +1751,6 @@ class FishingPlugin(Star):
             
         if self.web_admin_task:
             self.web_admin_task.cancel()
+        for repo in (self.loan_repo, self.user_repo, self.inventory_repo):
+            repo.close_connection()
         logger.info("钓鱼插件已成功终止。")
