@@ -863,12 +863,12 @@ class FishingService:
         max_rate = float(tax_config.get("max_rate", 0.2))
         surcharge_rate = max(float(tax_config.get("debt_surcharge_rate", 0.0)), 0.0)
         asset_scope = self._validated_scope(
-            tax_config.get("asset_scope", "wallet_bank_fixed"),
-            self.ASSET_SCOPES, "wallet_bank_fixed", "asset_scope", execution_id,
+            tax_config.get("asset_scope", "wallet"),
+            self.ASSET_SCOPES, "wallet", "asset_scope", execution_id,
         )
         deduct_scope = self._validated_scope(
-            tax_config.get("deduct_scope", "wallet_bank"),
-            self.DEDUCT_SCOPES, "wallet_bank", "deduct_scope", execution_id,
+            tax_config.get("deduct_scope", "wallet"),
+            self.DEDUCT_SCOPES, "wallet", "deduct_scope", execution_id,
         )
         taxable_mode = self._validated_scope(
             tax_config.get("taxable_mode", "total"),

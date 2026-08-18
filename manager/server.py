@@ -27,8 +27,8 @@ admin_bp = Blueprint(
 DEFAULT_TAX_CONFIG = {
     "is_tax": True,
     "threshold": 1_000_000,
-    "asset_scope": "wallet_bank_fixed",
-    "deduct_scope": "wallet_bank",
+    "asset_scope": "wallet",
+    "deduct_scope": "wallet",
     "taxable_mode": "total",
     "debt_surcharge_rate": 0.02,
     "step_coins": 100_000,

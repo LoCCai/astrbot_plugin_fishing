@@ -36,14 +36,14 @@
       "asset_scope": {
         "description": "每日资产税统计范围",
         "type": "string",
-        "hint": "wallet=只统计钱包（银行与定期免税，玩家可存入银行完全规避资产税）；wallet_bank=钱包+银行活期（定期仍可避税）；wallet_bank_fixed=钱包+银行活期+进行中定期本金（默认，堵死靠定期避税）",
-        "default": "wallet_bank_fixed"
+        "hint": "wallet=只统计钱包，银行活期与定期本金免税（默认，银行作为资产税缓冲）；wallet_bank=钱包+银行活期；wallet_bank_fixed=钱包+银行活期+进行中定期本金。默认值下玩家可以把金币存入银行来规避资产税，这是设计取舍；若不希望如此，改为 wallet_bank 或 wallet_bank_fixed",
+        "default": "wallet"
       },
       "deduct_scope": {
         "description": "每日资产税扣款来源",
         "type": "string",
-        "hint": "wallet=只从钱包扣；bank=只从银行活期可用余额扣；wallet_bank=钱包优先，不足再扣银行活期可用余额（默认）。预约锁定的资金和定期本金都扣不到，差额会转为欠税",
-        "default": "wallet_bank"
+        "hint": "wallet=只从钱包扣（默认，与 asset_scope 的默认口径一致）；bank=只从银行活期可用余额扣；wallet_bank=钱包优先，不足再扣银行活期可用余额。预约锁定的资金和定期本金都扣不到，差额会转为欠税",
+        "default": "wallet"
       },
       "taxable_mode": {
         "description": "每日资产税计税模式",
@@ -132,7 +132,7 @@
       "reservation_threshold": {
         "description": "大额取款预约门槛",
         "type": "int",
-        "hint": "当日累计取款达到该金额时需要先预约。按累计而非单笔判定，否则连续取「门槛-1」就能完全绕开预约",
+        "hint": "单笔取款达到该金额时需要先预约。按单笔判定，连续多笔小额取款不受此限制",
         "default": 5000000
       },
       "reservation_delay_hours": {

@@ -444,8 +444,9 @@ class LoanService:
                 if not bank_sql.user_exists(cursor, borrower_id):
                     return False, "❌ 借款人账户不存在"
 
-                # 催收必须穿透银行：只扣钱包的话，借款人借完立刻存进银行/开定期
-                # 就能让强制收款颗粒无收，等于凭空印钱。
+                # 催收穿透银行：只扣钱包的话，借款人借完立刻存进银行/开定期
+                # 就能让强制收款颗粒无收。银行的避税定位是既定设计，但挡住催收
+                # 是系统间的意外交互，需要保留该行为可关掉 collect_from_fixed。
                 actual_collect = bank_sql.collect_for_loan(
                     cursor, borrower_id, collect_amount, allow_fixed=self.collect_from_fixed
                 )

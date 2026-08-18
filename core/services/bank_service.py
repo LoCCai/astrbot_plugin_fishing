@@ -186,20 +186,13 @@ class BankService:
             return {"success": False, "message": "取款金额必须大于0"}
 
         threshold = self._reservation_threshold()
-        account = self._refresh_account(user_id)
-        today_withdrawn = account.today_withdrawn or 0
-        # 门槛按当日累计判定：只看单笔的话，连续取 (门槛-1) 就能无限出金。
-        if today_withdrawn + amount >= threshold:
-            remaining = max(threshold - today_withdrawn - 1, 0)
-            hint = (
-                f"💡 今日还可直接取款 {remaining:,} 金币，更多请走预约：\n"
-                f"   /钓鱼银行 预约取款 {amount}"
-            ) if remaining > 0 else f"💡 请使用：/钓鱼银行 预约取款 {amount}"
+        # 门槛按单笔判定（PR #17 的原始设计）
+        if amount >= threshold:
             return {
                 "success": False,
                 "message": (
-                    f"❌ 当日累计取款达到 {threshold:,} 金币需要预约。\n"
-                    f"📊 今日已取：{today_withdrawn:,} 金币\n{hint}"
+                    f"❌ 单笔取款达到 {threshold:,} 金币需要预约。\n"
+                    f"💡 请使用：/钓鱼银行 预约取款 {amount}"
                 ),
             }
 
@@ -266,12 +259,11 @@ class BankService:
 
         account = self._refresh_account(user_id)
         threshold = self._reservation_threshold()
-        today_withdrawn = account.today_withdrawn or 0
-        if today_withdrawn + amount < threshold:
+        if amount < threshold:
             return {
                 "success": False,
                 "message": (
-                    f"❌ 当日累计取款未达 {threshold:,} 金币无需预约。\n"
+                    f"❌ 低于 {threshold:,} 金币无需预约。\n"
                     f"💡 请直接使用：/钓鱼银行 取款 {amount}"
                 ),
             }

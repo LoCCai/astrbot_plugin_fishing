@@ -193,10 +193,10 @@ class FishingPlugin(Star):
                 "is_tax": self.is_tax,
                 "threshold": self.threshold,
                 "asset_scope": _validated_option(
-                    tax_config.get("asset_scope"), ASSET_SCOPES, "wallet_bank_fixed", "tax.asset_scope"
+                    tax_config.get("asset_scope"), ASSET_SCOPES, "wallet", "tax.asset_scope"
                 ),
                 "deduct_scope": _validated_option(
-                    tax_config.get("deduct_scope"), DEDUCT_SCOPES, "wallet_bank", "tax.deduct_scope"
+                    tax_config.get("deduct_scope"), DEDUCT_SCOPES, "wallet", "tax.deduct_scope"
                 ),
                 "taxable_mode": _validated_option(
                     tax_config.get("taxable_mode"), TAXABLE_MODES, "total", "tax.taxable_mode"

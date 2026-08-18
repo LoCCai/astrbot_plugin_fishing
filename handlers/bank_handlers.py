@@ -218,7 +218,7 @@ def _format_overview(result):
         f"📄 进行中定期：{result.get('fixed_count', 0)} 笔\n"
         f"🆓 今日免费提现剩余：{result['free_remaining']:,}/{result['daily_free_limit']:,} 金币\n"
         f"💸 超额取款手续费：{result['withdraw_fee_rate'] * 100:.1f}%\n"
-        f"📌 大额预约门槛：当日累计 {result['reservation_threshold']:,} 金币\n"
+        f"📌 大额预约门槛：单笔 {result['reservation_threshold']:,} 金币\n"
         f"📊 今日已取：{result.get('today_withdrawn', 0):,} 金币\n"
     )
     if not result.get("bank_enabled", True):

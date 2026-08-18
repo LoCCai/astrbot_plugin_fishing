@@ -215,20 +215,31 @@ class BankServiceRuleTests(unittest.TestCase):
 
     # --- 取款门槛 ---
 
-    def test_withdraw_blocked_by_cumulative_threshold(self):
+    def test_single_withdrawal_at_threshold_needs_reservation(self):
         helpers.set_bank_state(
-            self.db_path, balance=20_000_000, today_withdrawn=4_000_000,
+            self.db_path, balance=20_000_000, reset_date=self._reset_date()
+        )
+        service = self._service()
+
+        result = service.withdraw("u1", 5_000_000)
+
+        self.assertFalse(result["success"])
+        self.assertIn("单笔取款", result["message"])
+        self.assertIn("预约取款", result["message"])
+
+    def test_sub_threshold_withdrawal_passes_regardless_of_daily_total(self):
+        """PR #17 的既定设计：门槛只看单笔，不累计当日已取金额。"""
+        helpers.set_bank_state(
+            self.db_path, balance=20_000_000, today_withdrawn=4_900_000,
             reset_date=self._reset_date(),
         )
         service = self._service()
 
-        result = service.withdraw("u1", 2_000_000)
+        result = service.withdraw("u1", 4_000_000)
 
-        self.assertFalse(result["success"])
-        self.assertIn("当日累计取款", result["message"])
-        self.assertIn("预约取款", result["message"])
+        self.assertTrue(result["success"], result["message"])
 
-    def test_reservation_rejected_below_cumulative_threshold(self):
+    def test_reservation_rejected_below_threshold(self):
         helpers.set_bank_state(self.db_path, balance=20_000_000, today_withdrawn=0)
         service = self._service()
 

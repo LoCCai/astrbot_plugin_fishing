@@ -1,10 +1,11 @@
 """银行与资产税的经济规则回归测试。
 
-这批用例守的是「钱不能凭空消失、也不能凭空躲开」这条底线：
+这批用例守的是资金流转的完整性，以及各项口径开关按说明生效：
 - 欠税必须能被清偿，且清偿顺序是先旧账后新账；
-- 预约锁定的资金不能既取不出又扣不到税；
-- 定期不能既免税又生息、也不能挡住借贷催收；
-- 大额取款门槛不能靠拆单绕开。
+- 预约锁定的资金不能既取不出又扣不到税，超时必须能释放；
+- asset_scope / deduct_scope 三档口径各自的统计与扣款范围准确；
+- 借贷催收能穿透银行（可通过 loan.collect_from_fixed 关闭）；
+- 大额取款门槛按单笔判定，与 PR #17 的原始设计一致。
 """
 
 import importlib
@@ -266,30 +267,31 @@ class LockedBalanceInvariantTests(BankEconomyTestCase):
 
 
 class WithdrawThresholdTests(BankEconomyTestCase):
-    def test_cumulative_withdrawals_hit_the_reservation_threshold(self):
-        """按单笔判定的话，连续取「门槛-1」就能无限出金。"""
+    def test_single_withdrawal_at_threshold_needs_reservation(self):
         helpers.set_bank_state(self.db_path, balance=20_000_000, reset_date=TODAY)
-
-        ok, _, _, _, _, _ = self.repo.withdraw(
-            "u1", 4_000_000, TODAY, FREE_LIMIT, FEE_RATE, 5_000_000
-        )
-        self.assertTrue(ok)
 
         ok, message, _, _, _, _ = self.repo.withdraw(
-            "u1", 4_000_000, TODAY, FREE_LIMIT, FEE_RATE, 5_000_000
+            "u1", 5_000_000, TODAY, FREE_LIMIT, FEE_RATE, 5_000_000
         )
+
         self.assertFalse(ok)
-        self.assertIn("预约", message)
+        self.assertIn("单笔", message)
 
-    def test_threshold_resets_next_day(self):
+    def test_repeated_sub_threshold_withdrawals_are_allowed_by_design(self):
+        """刻画 PR #17 的既定设计：门槛按单笔判定，连续小额取款不受限制。
+
+        这不是漏网之鱼，是留给服务器的取舍——要收紧就调低 reservation_threshold。
+        改成按当日累计判定会推翻这个设计，所以用例把现状钉住。
+        """
         helpers.set_bank_state(self.db_path, balance=20_000_000, reset_date=TODAY)
-        self.repo.withdraw("u1", 4_000_000, TODAY, FREE_LIMIT, FEE_RATE, 5_000_000)
 
-        ok, _, account, _, _, _ = self.repo.withdraw(
-            "u1", 4_000_000, TOMORROW, FREE_LIMIT, FEE_RATE, 5_000_000
-        )
-        self.assertTrue(ok)
-        self.assertEqual(account.today_withdrawn, 4_000_000)
+        for _ in range(3):
+            ok, _, account, _, _, _ = self.repo.withdraw(
+                "u1", 4_000_000, TODAY, FREE_LIMIT, FEE_RATE, 5_000_000
+            )
+            self.assertTrue(ok)
+
+        self.assertEqual(account.today_withdrawn, 12_000_000)
 
 
 class FixedDepositTests(BankEconomyTestCase):
@@ -366,6 +368,7 @@ class TaxScopeTests(BankEconomyTestCase):
         self._insert_fixed(principal=900_000)
 
     def test_wallet_scope_ignores_bank_and_fixed(self):
+        """默认口径：银行活期与定期本金都不计税，银行即资产税缓冲。"""
         self._setup_assets()
         subjects = self.repo.get_daily_tax_subjects(1_000_000, "wallet")
         self.assertEqual(subjects, [])
@@ -377,7 +380,11 @@ class TaxScopeTests(BankEconomyTestCase):
         self.assertEqual(subjects[0]["assessed_assets"], 1_100_000)
 
     def test_wallet_bank_fixed_scope_covers_everything(self):
-        """定期免税的话，玩家把钱滚进 1 天定期就能既避税又生息。"""
+        """最严口径：钱包 + 活期 + 定期本金全部计入。
+
+        默认口径是 wallet（银行作为资产税缓冲，见 PR #17），这一档是留给
+        不希望玩家靠银行避税的服务器的选项。
+        """
         self._setup_assets()
         subjects = self.repo.get_daily_tax_subjects(1_000_000, "wallet_bank_fixed")
         self.assertEqual(len(subjects), 1)

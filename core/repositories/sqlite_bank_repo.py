@@ -197,12 +197,12 @@ class SqliteBankRepository:
                 return False, "银行可用余额不足", self._row_to_account(account_row), wallet, 0, 0
 
             today_withdrawn = account_row["today_withdrawn"] or 0
-            # 预约门槛按「当日累计取款」判定。只看单笔的话，连续小额取款就能
-            # 把大额预约完全绕开。
-            if reservation_threshold and today_withdrawn + amount >= reservation_threshold:
+            # 门槛按单笔判定（PR #17 的原始设计）。连续多笔小额取款不受限制，
+            # 这是刻意留出的口子；需要收紧的服务器可以直接调低门槛。
+            if reservation_threshold and amount >= reservation_threshold:
                 return (
                     False,
-                    f"当日累计取款达到 {reservation_threshold:,} 金币需要预约",
+                    f"单笔取款达到 {reservation_threshold:,} 金币需要预约",
                     self._row_to_account(account_row),
                     wallet,
                     0,
