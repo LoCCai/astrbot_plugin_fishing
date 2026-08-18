@@ -7,6 +7,7 @@ from typing import List, Tuple
 
 from astrbot.api import logger
 
+from ..repositories import bank_sql
 from ..repositories.sqlite_loan_repo import SqliteLoanRepository
 from ..repositories.sqlite_user_repo import SqliteUserRepository
 from ..domain.loan_models import Loan
@@ -21,13 +22,17 @@ class LoanService:
         user_repo: SqliteUserRepository,
         default_interest_rate: float = 0.05,
         system_loan_ratio: float = 0.10,
-        system_loan_days: int = 7
+        system_loan_days: int = 7,
+        collect_from_fixed: bool = True
     ):
         self.loan_repo = loan_repo
         self.user_repo = user_repo
         self.default_interest_rate = default_interest_rate
         self.system_loan_ratio = system_loan_ratio  # 系统借款比例（历史最高金币的10%）
         self.system_loan_days = system_loan_days  # 系统借款期限（天）
+        # 强制收款时是否可以解约借款人的定期存款。关掉的话，把钱全部押成定期
+        # 仍然能躲过催收。
+        self.collect_from_fixed = collect_from_fixed
 
     def _atomic_update_coins(self, cursor, user_id: str, amount: int) -> bool:
         """在给定的 cursor（同一事务）内原子更新用户金币"""
@@ -63,6 +68,12 @@ class LoanService:
         
         if principal <= 0:
             return False, "❌ 借款金额必须大于0", None
+
+        if not self.user_repo.check_exists(lender_id):
+            return False, "❌ 放贷人账户不存在，请先注册", None
+
+        if not self.user_repo.check_exists(borrower_id):
+            return False, "❌ 借款人账户不存在", None
 
         # 使用默认利率或自定义利率
         if interest_rate is None:
@@ -430,17 +441,16 @@ class LoanService:
                         return False, "❌ 收款金额必须大于0"
                     collect_amount = min(amount, total_debt)
 
-                # 检查借款人余额
-                cursor.execute("SELECT coins FROM users WHERE user_id = ?", (borrower_id,))
-                row = cursor.fetchone()
-                if not row:
+                if not bank_sql.user_exists(cursor, borrower_id):
                     return False, "❌ 借款人账户不存在"
-                borrower_coins = row[0]
 
-                # 实际能收到的金额
-                actual_collect = min(collect_amount, borrower_coins)
+                # 催收必须穿透银行：只扣钱包的话，借款人借完立刻存进银行/开定期
+                # 就能让强制收款颗粒无收，等于凭空印钱。
+                actual_collect = bank_sql.collect_for_loan(
+                    cursor, borrower_id, collect_amount, allow_fixed=self.collect_from_fixed
+                )
                 if actual_collect <= 0:
-                    return False, "❌ 对方金币余额为0，无法收款"
+                    return False, "❌ 对方钱包与银行均无可扣资产，无法收款"
 
                 total_collected = 0
                 paid_off_loans = []
@@ -466,8 +476,13 @@ class LoanService:
                     if new_status == "paid":
                         paid_off_loans.append(loan.loan_id)
 
-                # 原子扣减/增加金币
-                cursor.execute("UPDATE users SET coins = MAX(0, coins - ?) WHERE user_id = ?", (total_collected, borrower_id))
+                # 借款人侧的资金已在 collect_for_loan 里扣走，这里只需入账给放贷人。
+                # 借条吸收不完的零头退回借款人钱包，避免多扣。
+                refund = actual_collect - total_collected
+                if refund > 0:
+                    cursor.execute(
+                        "UPDATE users SET coins = coins + ? WHERE user_id = ?", (refund, borrower_id)
+                    )
                 cursor.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (total_collected, lender_id))
                 cursor.execute("UPDATE users SET max_coins = coins WHERE user_id = ? AND coins > max_coins", (lender_id,))
 
@@ -484,7 +499,7 @@ class LoanService:
                 msg += f"\n📋 剩余欠款：{total_remaining:,} 金币"
 
             if actual_collect < collect_amount:
-                msg += f"\n⚠️ 对方余额不足，仅收到 {actual_collect:,} / {collect_amount:,} 金币"
+                msg += f"\n⚠️ 对方可扣资产不足，仅收到 {actual_collect:,} / {collect_amount:,} 金币"
 
             return True, msg
 

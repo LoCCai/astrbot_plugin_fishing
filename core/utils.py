@@ -1,12 +1,39 @@
 import random
 from datetime import datetime, date, timedelta, timezone
-from typing import List, Tuple, Any
+from typing import List, Optional, Tuple, Any, Union
 
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+UTC8 = timezone(timedelta(hours=8))
+
 # 获取当前的UTC+8时间
 def get_now() -> datetime:
-    return datetime.now(timezone(timedelta(hours=8)))
+    return datetime.now(UTC8)
+
+def ensure_aware(value: Union[str, datetime, None]) -> Optional[datetime]:
+    """把库里读到的时间统一成 UTC+8 的 aware datetime。
+
+    历史数据是用 naive 的 datetime.now()（服务器本地时区）写入的，直接和
+    get_now() 比较会抛 "can't compare offset-naive and offset-aware"。
+    这里按服务器本地时区解释 naive 值再换算到 UTC+8，UTC 部署的老数据也能
+    正确对齐。
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            try:
+                value = datetime.strptime(value, DATETIME_FORMAT)
+            except ValueError:
+                return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        # naive 值按服务器本地时区解释
+        value = value.astimezone()
+    return value.astimezone(UTC8)
 
 def get_today() -> date:
     return get_now().date()

@@ -29,6 +29,8 @@ async def ranking(plugin: "FishingPlugin", event: AstrMessageEvent):
             ranking_type = "total_weight_caught"
         elif sort_key in ["历史", "最高", "max", "history", "历史最高"]:
             ranking_type = "max_coins"
+        elif sort_key in ["总资产", "资产", "财富", "assets"]:
+            ranking_type = "total_assets"
 
     # 1. 从服务层获取基础排行榜数据（现在已包含 user_id 和 current_title_id）
     user_data = plugin.user_service.get_leaderboard_data(sort_by=ranking_type).get(

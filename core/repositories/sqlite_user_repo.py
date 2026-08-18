@@ -25,6 +25,18 @@ class SqliteUserRepository(AbstractUserRepository):
             self._local.connection = conn
         return conn
 
+    def close_connection(self) -> None:
+        """关闭当前线程的连接，退出后台任务时释放线程资源。"""
+        conn = getattr(self._local, "connection", None)
+        if conn is None:
+            return
+        try:
+            if conn.in_transaction:
+                conn.rollback()
+            conn.close()
+        finally:
+            delattr(self._local, "connection")
+
     def _row_to_user(self, row: sqlite3.Row) -> Optional[User]:
         """
         [已修正] 将数据库行安全地转换为 User 对象。
@@ -162,6 +174,102 @@ class SqliteUserRepository(AbstractUserRepository):
         except sqlite3.Error as e:
             logger.error(f"更新用户 {user.user_id} 数据时发生数据库错误: {e}")
             raise
+
+    def toggle_auto_fishing(self, user_id: str) -> Optional[bool]:
+        """原子切换自动钓鱼状态并返回新状态。"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE users
+                SET auto_fishing_enabled = CASE auto_fishing_enabled WHEN 0 THEN 1 ELSE 0 END
+                WHERE user_id = ?
+                RETURNING auto_fishing_enabled
+                """,
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return bool(row[0]) if row else None
+
+    def set_auto_fishing_enabled(self, user_id: str, enabled: bool) -> bool:
+        """原子设置自动钓鱼状态。"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE users SET auto_fishing_enabled = ? WHERE user_id = ?",
+                (1 if enabled else 0, user_id),
+            )
+            updated = cursor.rowcount == 1
+            conn.commit()
+            return updated
+
+    def record_failed_fishing(self, user_id: str, cost: int, timestamp: datetime) -> bool:
+        """仅更新失败钓鱼所需字段，避免整行旧数据回写。"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE users
+                SET coins = coins - ?, last_fishing_time = ?
+                WHERE user_id = ? AND coins >= ?
+                """,
+                (cost, timestamp, user_id, cost),
+            )
+            updated = cursor.rowcount == 1
+            conn.commit()
+            return updated
+
+    def update_bait_state(
+        self, user_id: str, bait_id: Optional[int], bait_start_time: Optional[datetime]
+    ) -> bool:
+        """只保存当前鱼饵状态。"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE users SET current_bait_id = ?, bait_start_time = ? WHERE user_id = ?",
+                (bait_id, bait_start_time, user_id),
+            )
+            updated = cursor.rowcount == 1
+            conn.commit()
+            return updated
+
+    def set_fishing_zone(self, user_id: str, zone_id: int) -> bool:
+        """只更新用户所在钓鱼区域。"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE users SET fishing_zone_id = ? WHERE user_id = ?",
+                (zone_id, user_id),
+            )
+            updated = cursor.rowcount == 1
+            conn.commit()
+            return updated
+
+    def deduct_coins_up_to(self, user_id: str, amount: int) -> tuple[int, int]:
+        """在一个事务内最多扣除指定金币，返回实际扣除额和余额。"""
+        amount = max(int(amount), 0)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            try:
+                cursor.execute("SELECT coins FROM users WHERE user_id = ?", (user_id,))
+                row = cursor.fetchone()
+                if row is None:
+                    conn.rollback()
+                    return 0, 0
+                balance = int(row[0])
+                deducted = min(amount, balance)
+                new_balance = balance - deducted
+                cursor.execute(
+                    "UPDATE users SET coins = ? WHERE user_id = ?",
+                    (new_balance, user_id),
+                )
+                conn.commit()
+                return deducted, new_balance
+            except Exception:
+                conn.rollback()
+                raise
 
     def get_all_user_ids(self, auto_fishing_only: bool = False) -> List[str]:
         query = "SELECT user_id FROM users"

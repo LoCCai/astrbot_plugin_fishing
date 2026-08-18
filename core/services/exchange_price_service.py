@@ -28,6 +28,7 @@ class ExchangePriceService:
         # 价格更新任务
         self._price_update_thread: Optional[threading.Thread] = None
         self._price_update_running = False
+        self._price_update_stop_event = threading.Event()
 
     def get_market_status(self) -> Dict[str, Any]:
         """获取市场状态"""
@@ -301,6 +302,7 @@ class ExchangePriceService:
             return
 
         self._price_update_running = True
+        self._price_update_stop_event.clear()
         self._price_update_thread = threading.Thread(target=self._daily_price_update_loop, daemon=True)
         self._price_update_thread.start()
         logger.info("价格更新线程已启动")
@@ -308,9 +310,13 @@ class ExchangePriceService:
     def stop_daily_price_update_task(self):
         """停止每日价格更新任务"""
         self._price_update_running = False
+        self._price_update_stop_event.set()
         if self._price_update_thread:
-            self._price_update_thread.join(timeout=1.0)
-            logger.info("价格更新线程已停止")
+            self._price_update_thread.join(timeout=5.0)
+            if self._price_update_thread.is_alive():
+                logger.warning("价格更新线程未能在 5 秒内停止")
+            else:
+                logger.info("价格更新线程已停止")
 
     def _daily_price_update_loop(self):
         """每日价格更新循环"""
@@ -330,11 +336,8 @@ class ExchangePriceService:
                 
                 if wait_seconds > 0:
                     logger.info(f"等待 {wait_seconds/3600:.1f} 小时后进行下次价格更新")
-                    # 分段等待，以便能够及时响应停止信号
-                    while wait_seconds > 0 and self._price_update_running:
-                        sleep_time = min(60, wait_seconds)  # 最多等待60秒
-                        time.sleep(sleep_time)
-                        wait_seconds -= sleep_time
+                    if self._price_update_stop_event.wait(wait_seconds):
+                        break
                 
                 if not self._price_update_running:
                     break
@@ -348,7 +351,8 @@ class ExchangePriceService:
                 # 记录错误但继续运行
                 logger.error(f"交易所价格更新任务出错: {e}")
                 logger.error("堆栈信息:", exc_info=True)
-                time.sleep(3600)  # 出错后等待1小时再重试
+                if self._price_update_stop_event.wait(3600):
+                    break
 
     def _parse_update_schedule(self, value: Any) -> List[dt_time]:
         """Parse update_timing config into a sorted list of time objects."""

@@ -48,6 +48,8 @@ class UserService:
         self.gacha_service = gacha_service
         self.config = config
         self.achievement_repo = achievement_repo
+        # 由组合根注入，用于总资产榜和转账前的欠税校验。
+        self.bank_repo = None
 
     def register(self, user_id: str, nickname: str) -> Dict[str, Any]:
         """
@@ -124,9 +126,31 @@ class UserService:
             top_users = self.user_repo.get_top_users_by_weight(limit)
         elif sort_by == "max_coins":
             top_users = self.user_repo.get_top_users_by_max_coins(limit)
+        elif sort_by == "total_assets" and self.bank_repo:
+            # 金币榜只看钱包，银行上线后越有钱的人越会把钱藏进银行，榜单会失真，
+            # 这里按 钱包+活期+进行中定期本金 排。
+            rows = self.bank_repo.get_top_users_by_total_assets(limit)
+            return {
+                "success": True,
+                "leaderboard": [
+                    {
+                        "user_id": row["user_id"],
+                        "nickname": row["nickname"],
+                        "coins": row["coins"],
+                        "max_coins": row["max_coins"],
+                        "bank_balance": row["bank_balance"],
+                        "fixed_principal": row["fixed_principal"],
+                        "total_assets": row["total_assets"],
+                        "fish_count": 0,
+                        "total_weight_caught": 0,
+                        "current_title_id": None,
+                    }
+                    for row in rows
+                ],
+            }
         else: # 默认按金币排序
             top_users = self.user_repo.get_top_users_by_coins(limit)
-        
+
         leaderboard = []
         for user in top_users:
             # --- [核心修复] ---
@@ -397,6 +421,23 @@ class UserService:
             "message": f"金币数量已更新，当前金币：{user.coins}"
         }
 
+    def _check_tax_debt_block(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """欠税未缴时阻断资产转出。返回 None 表示放行。"""
+        if not self.bank_repo:
+            return None
+        if not self.config.get("bank", {}).get("block_inflow_when_in_debt", True):
+            return None
+        debt = self.bank_repo.get_tax_debt(user_id)
+        if debt <= 0:
+            return None
+        return {
+            "success": False,
+            "message": (
+                f"❌ 你还有 {debt:,} 金币欠税未缴，无法转账。\n"
+                f"💡 请先使用：/钓鱼银行 还税"
+            ),
+        }
+
     def transfer_coins(self, from_user_id: str, to_user_id: str, amount: int) -> Dict[str, Any]:
         """
         用户之间转账金币。
@@ -414,7 +455,11 @@ class UserService:
         # 检查是否转账给自己
         if from_user_id == to_user_id:
             return {"success": False, "message": "不能转账给自己"}
-        
+
+        # 欠税未清时禁止转出，否则把钱转给小号就能永远躲开补扣
+        if debt_error := self._check_tax_debt_block(from_user_id):
+            return debt_error
+
         # 获取转账方用户
         from_user = self.user_repo.get_by_id(from_user_id)
         if not from_user:

@@ -39,6 +39,7 @@ class AchievementService:
 
         self.achievement_check_thread: Optional[threading.Thread] = None
         self.achievement_check_running = False
+        self._achievement_stop_event = threading.Event()
 
     def _load_achievements(self) -> List[BaseAchievement]:
         """动态扫描并加载所有成就类。"""
@@ -195,14 +196,18 @@ class AchievementService:
         if self.achievement_check_thread and self.achievement_check_thread.is_alive():
             return
         self.achievement_check_running = True
+        self._achievement_stop_event.clear()
         self.achievement_check_thread = threading.Thread(target=self._achievement_check_loop, daemon=True)
         self.achievement_check_thread.start()
 
     def stop_achievement_check_task(self):
         """停止成就检查的后台线程。"""
         self.achievement_check_running = False
+        self._achievement_stop_event.set()
         if self.achievement_check_thread:
-            self.achievement_check_thread.join(timeout=1.0)
+            self.achievement_check_thread.join(timeout=5.0)
+            if self.achievement_check_thread.is_alive():
+                logger.warning("成就检查线程未能在 5 秒内停止")
 
     def _achievement_check_loop(self):
         """成就检查循环任务。"""
@@ -211,11 +216,13 @@ class AchievementService:
                 all_user_ids = self.user_repo.get_all_user_ids()
                 for user_id in all_user_ids:
                     self._process_user_achievements(user_id)
-                time.sleep(600) # 10分钟检查一次
+                if self._achievement_stop_event.wait(600):
+                    break
             except Exception as e:
                 logger.error(f"成就检查任务出错: {e}")
                 logger.error("堆栈信息:", exc_info=True)
-                time.sleep(60)
+                if self._achievement_stop_event.wait(60):
+                    break
 
     def _process_user_achievements(self, user_id: str):
         """处理单个用户的成就检查和发放流程。"""
