@@ -45,6 +45,9 @@ class FishingService:
         self.fishing_zone_service = fishing_zone_service
         self.config = config
         self.bank_repo = bank_repo
+        # 由组合根在 BankService 构造后注入，用于每日任务里结算到期定期。
+        # 走服务层而不是直接调仓储，是为了让欠税补扣同样写进税收记录。
+        self.bank_service = None
 
         # 获取每日刷新时间配置
         self.daily_reset_hour = self.config.get("daily_reset_hour", 0)
@@ -826,39 +829,68 @@ class FishingService:
 
         return {"success": True, "message": success_message}
 
+    ASSET_SCOPES = ("wallet", "wallet_bank", "wallet_bank_fixed")
+    DEDUCT_SCOPES = ("wallet", "bank", "wallet_bank")
+    TAXABLE_MODES = ("total", "excess")
+
+    def _validated_scope(self, value, allowed, default, label: str, execution_id: str) -> str:
+        """非法的口径值会静默改变全服计税结果，这里必须显式告警并回落默认。"""
+        if value in allowed:
+            return value
+        logger.warning(
+            f"[税收-{execution_id}] {label} 配置值 {value!r} 不在 {allowed} 内，已回落为 {default!r}"
+        )
+        return default
+
     def apply_daily_taxes(self) -> None:
         """对所有高价值用户征收每日税收。逐用户检查，确保不遗漏也不重复征收。"""
         import uuid
-        
+
         # 生成执行ID用于追踪和调试
         execution_id = uuid.uuid4().hex[:8]
-        
+
         tax_config = self.config.get("tax", {})
         if tax_config.get("is_tax", False) is False:
             logger.info(f"[税收-{execution_id}] 税收功能未启用，跳过")
             return
-        
+
         logger.info(f"[税收-{execution_id}] 开始检查每日资产税（执行ID: {execution_id}）")
-        
+
         threshold = int(tax_config.get("threshold", 1000000))
         step_coins = max(int(tax_config.get("step_coins", 1000000)), 1)
         step_rate = float(tax_config.get("step_rate", 0.01))
         min_rate = float(tax_config.get("min_rate", 0.001))
         max_rate = float(tax_config.get("max_rate", 0.2))
-        asset_scope = tax_config.get("asset_scope", "wallet_bank")
-        deduct_scope = tax_config.get("deduct_scope", "wallet_bank")
-        taxable_mode = tax_config.get("taxable_mode", "total")
-        
+        surcharge_rate = max(float(tax_config.get("debt_surcharge_rate", 0.0)), 0.0)
+        asset_scope = self._validated_scope(
+            tax_config.get("asset_scope", "wallet_bank_fixed"),
+            self.ASSET_SCOPES, "wallet_bank_fixed", "asset_scope", execution_id,
+        )
+        deduct_scope = self._validated_scope(
+            tax_config.get("deduct_scope", "wallet_bank"),
+            self.DEDUCT_SCOPES, "wallet_bank", "deduct_scope", execution_id,
+        )
+        taxable_mode = self._validated_scope(
+            tax_config.get("taxable_mode", "total"),
+            self.TAXABLE_MODES, "total", "taxable_mode", execution_id,
+        )
+        reset_date = get_last_reset_time(self.daily_reset_hour).date().isoformat()
+
         logger.info(
             f"[税收-{execution_id}] 税收配置：起征点={threshold}, 资产范围={asset_scope}, 扣款范围={deduct_scope}, "
             f"计税模式={taxable_mode}, 步长={step_coins}, 步长税率={step_rate*100}%, "
-            f"最小税率={min_rate*100}%, 最大税率={max_rate*100}%"
+            f"最小税率={min_rate*100}%, 最大税率={max_rate*100}%, 滞纳金率={surcharge_rate*100}%"
         )
+
+        # 征税前先回收过期预约：被锁定的资金扣不到税，只会不断累积欠税。
+        self._prepare_bank_before_tax(execution_id)
 
         tax_subjects = self._get_daily_tax_subjects(threshold, asset_scope)
         logger.info(f"[税收-{execution_id}] 检测到 {len(tax_subjects)} 个达到税收阈值的用户，开始逐个检查")
-        
+
         total_tax_collected = 0
+        total_debt_repaid = 0
+        total_debt_added = 0
         taxed_user_count = 0
         skipped_user_count = 0
 
@@ -870,7 +902,7 @@ class FishingService:
                 logger.debug(f"[税收-{execution_id}] 用户 {user.user_id} 今日已缴税，跳过")
                 skipped_user_count += 1
                 continue
-            
+
             tax_rate = 0.0
             # 根据资产确定税率
             if assessed_assets >= threshold:
@@ -883,45 +915,100 @@ class FishingService:
                 taxable_base = max(assessed_assets - threshold, 0)
 
             min_tax_amount = 1
-            if tax_rate > 0 and taxable_base > 0:
-                requested_tax_amount = max(int(taxable_base * tax_rate), min_tax_amount)
-                tax_amount, balance_after, debt_added = self._collect_daily_tax(
-                    user.user_id,
-                    requested_tax_amount,
-                    deduct_scope,
-                )
-                if tax_amount <= 0 and debt_added <= 0:
-                    logger.warning(f"[税收-{execution_id}] 用户 {user.user_id} 可扣资产不足且未产生欠税，跳过")
-                    continue
+            if tax_rate <= 0 or taxable_base <= 0:
+                continue
 
-                tax_log = TaxRecord(
-                    tax_id=0, # DB会自增
+            requested_tax_amount = max(int(taxable_base * tax_rate), min_tax_amount)
+            outcome = self._collect_daily_tax(
+                user.user_id, requested_tax_amount, deduct_scope, reset_date, surcharge_rate
+            )
+            tax_paid = outcome["tax_paid"]
+            debt_added = outcome["debt_added"]
+            debt_repaid = outcome["debt_repaid"]
+            balance_after = outcome["assessed_balance_after"]
+            if tax_paid <= 0 and debt_added <= 0 and debt_repaid <= 0:
+                logger.warning(f"[税收-{execution_id}] 用户 {user.user_id} 可扣资产不足且未产生欠税，跳过")
+                continue
+
+            # 这条记录同时承担「今日已征税」的去重标记，即使实缴为 0 也要写。
+            self.log_repo.add_tax_record(TaxRecord(
+                tax_id=0,  # DB会自增
+                user_id=user.user_id,
+                tax_amount=tax_paid,
+                tax_rate=tax_rate,
+                original_amount=assessed_assets,
+                balance_after=balance_after,
+                timestamp=get_now(),
+                tax_type="每日资产税",
+            ))
+            if outcome["surcharge"] > 0:
+                self.log_repo.add_tax_record(TaxRecord(
+                    tax_id=0,
                     user_id=user.user_id,
-                    tax_amount=tax_amount,
+                    tax_amount=outcome["surcharge"],
+                    tax_rate=surcharge_rate,
+                    original_amount=outcome["debt_before"],
+                    balance_after=balance_after,
+                    timestamp=get_now(),
+                    tax_type="欠税滞纳金",
+                ))
+            if debt_repaid > 0:
+                self.log_repo.add_tax_record(TaxRecord(
+                    tax_id=0,
+                    user_id=user.user_id,
+                    tax_amount=debt_repaid,
+                    tax_rate=0.0,
+                    original_amount=outcome["debt_before"],
+                    balance_after=balance_after,
+                    timestamp=get_now(),
+                    tax_type="欠税补扣",
+                ))
+            if debt_added > 0:
+                self.log_repo.add_tax_record(TaxRecord(
+                    tax_id=0,
+                    user_id=user.user_id,
+                    tax_amount=debt_added,
                     tax_rate=tax_rate,
                     original_amount=assessed_assets,
                     balance_after=balance_after,
                     timestamp=get_now(),
-                    tax_type="每日资产税"
-                )
-                self.log_repo.add_tax_record(tax_log)
-                if debt_added > 0:
-                    debt_log = TaxRecord(
-                        tax_id=0,
-                        user_id=user.user_id,
-                        tax_amount=debt_added,
-                        tax_rate=tax_rate,
-                        original_amount=assessed_assets,
-                        balance_after=balance_after,
-                        timestamp=get_now(),
-                        tax_type="每日资产税欠税",
-                    )
-                    self.log_repo.add_tax_record(debt_log)
-                
-                total_tax_collected += tax_amount
-                taxed_user_count += 1
-        
-        logger.info(f"[税收-{execution_id}] 每日资产税执行完成，征税 {taxed_user_count} 人，跳过 {skipped_user_count} 人（已缴税），总计 {total_tax_collected} 金币")
+                    tax_type="每日资产税欠税",
+                ))
+
+            total_tax_collected += tax_paid
+            total_debt_repaid += debt_repaid
+            total_debt_added += debt_added
+            taxed_user_count += 1
+
+        logger.info(
+            f"[税收-{execution_id}] 每日资产税执行完成，征税 {taxed_user_count} 人，"
+            f"跳过 {skipped_user_count} 人（已缴税），当日税 {total_tax_collected} 金币，"
+            f"补缴欠税 {total_debt_repaid} 金币，新增欠税 {total_debt_added} 金币"
+        )
+
+    def _prepare_bank_before_tax(self, execution_id: str) -> None:
+        """征税前的银行侧准备：回收过期预约、结算到期定期。
+
+        过期预约不回收的话，被锁定的资金扣不到税，只会不断累积欠税；到期定期
+        不结算的话，本金和收益会一直躺在存单里不动。
+        """
+        if not self.bank_repo:
+            return
+        try:
+            expired = self.bank_repo.expire_stale_reservations()
+            if expired:
+                logger.info(f"[税收-{execution_id}] 回收了 {expired} 笔过期取款预约")
+        except Exception as e:
+            logger.error(f"[税收-{execution_id}] 回收过期取款预约失败: {e}")
+
+        if not self.bank_service:
+            return
+        try:
+            settled = self.bank_service.settle_matured_fixed_deposits()
+            if settled:
+                logger.info(f"[税收-{execution_id}] 自动结算了 {len(settled)} 笔到期定期存款")
+        except Exception as e:
+            logger.error(f"[税收-{execution_id}] 自动结算到期定期存款失败: {e}")
 
     def _get_daily_tax_subjects(self, threshold: int, asset_scope: str):
         if asset_scope == "wallet" or not self.bank_repo:
@@ -931,16 +1018,28 @@ class FishingService:
             ]
         return self.bank_repo.get_daily_tax_subjects(threshold, asset_scope)
 
-    def _collect_daily_tax(self, user_id: str, tax_amount: int, deduct_scope: str):
-        if deduct_scope == "wallet" or not self.bank_repo:
-            actual_tax, remaining_coins = self.user_repo.deduct_coins_up_to(
-                user_id, tax_amount
-            )
-            debt_added = max(tax_amount - actual_tax, 0)
-            if debt_added > 0 and self.bank_repo:
-                self.bank_repo.add_tax_debt(user_id, debt_added)
-            return actual_tax, remaining_coins, debt_added
-        return self.bank_repo.collect_daily_tax(user_id, tax_amount, deduct_scope)
+    def _collect_daily_tax(
+        self, user_id: str, tax_amount: int, deduct_scope: str,
+        reset_date: str, surcharge_rate: float,
+    ) -> dict:
+        """扣税并清偿历史欠税，统一返回结构。"""
+        if not self.bank_repo:
+            actual_tax, remaining_coins = self.user_repo.deduct_coins_up_to(user_id, tax_amount)
+            return {
+                "requested_tax": tax_amount,
+                "surcharge": 0,
+                "debt_before": 0,
+                "debt_repaid": 0,
+                "tax_paid": actual_tax,
+                "debt_added": max(tax_amount - actual_tax, 0),
+                "debt_after": 0,
+                "wallet_after": remaining_coins,
+                "bank_after": 0,
+                "assessed_balance_after": remaining_coins,
+            }
+        return self.bank_repo.collect_daily_tax(
+            user_id, tax_amount, deduct_scope, reset_date, surcharge_rate
+        )
 
     def enforce_zone_pass_requirements_for_all_users(self) -> None:
         """

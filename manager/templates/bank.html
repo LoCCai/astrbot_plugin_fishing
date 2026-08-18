@@ -204,4 +204,91 @@
         </div>
     </div>
 </div>
+
+<div class="row g-3 mt-1">
+    <div class="col-lg-6">
+        <div class="card border-secondary h-100">
+            <div class="card-header">管理员操作</div>
+            <div class="card-body">
+                <form class="row g-2 align-items-end mb-4" method="post" action="{{ url_for('admin_bp.adjust_bank_balance') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="col-md-4">
+                        <label class="form-label" for="adjust_user_id">用户 ID</label>
+                        <input class="form-control form-control-sm" id="adjust_user_id" name="user_id" required>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label" for="adjust_delta">增减金额</label>
+                        <input class="form-control form-control-sm" id="adjust_delta" name="delta" placeholder="可为负" required>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label" for="adjust_remark">备注</label>
+                        <input class="form-control form-control-sm" id="adjust_remark" name="remark">
+                    </div>
+                    <div class="col-md-2">
+                        <button type="submit" class="btn btn-sm btn-outline-primary w-100">调整活期</button>
+                    </div>
+                    <div class="col-12">
+                        <div class="form-text">调整后的余额不能低于预约锁定额。所有调整都会写入银行流水。</div>
+                    </div>
+                </form>
+
+                <form class="row g-2 align-items-end" method="post" action="{{ url_for('admin_bp.cancel_bank_reservation') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="col-md-5">
+                        <label class="form-label" for="cancel_user_id">用户 ID</label>
+                        <input class="form-control form-control-sm" id="cancel_user_id" name="user_id" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label" for="cancel_reservation_id">预约编号</label>
+                        <input class="form-control form-control-sm" id="cancel_reservation_id" name="reservation_id" required>
+                    </div>
+                    <div class="col-md-3">
+                        <button type="submit" class="btn btn-sm btn-outline-danger w-100">强制取消预约</button>
+                    </div>
+                    <div class="col-12">
+                        <div class="form-text">用于释放卡住的锁定资金。</div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card border-secondary h-100">
+            <div class="card-header">银行流水（最近 100 条）</div>
+            <div class="card-body">
+                <div class="table-responsive" style="max-height: 420px; overflow-y: auto;">
+                    <table class="table table-sm table-striped align-middle">
+                        <thead>
+                            <tr>
+                                <th>时间</th>
+                                <th>用户</th>
+                                <th>类型</th>
+                                <th class="text-end">金额</th>
+                                <th class="text-end">钱包后</th>
+                                <th class="text-end">活期后</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in transactions %}
+                            {% set tx = item.transaction %}
+                            <tr>
+                                <td class="text-nowrap">{{ tx.created_at.strftime('%m-%d %H:%M') if tx.created_at else '-' }}</td>
+                                <td>{{ item.nickname or tx.user_id }}</td>
+                                <td>{{ tx.tx_type }}</td>
+                                <td class="text-end">{{ "{:,}".format(tx.amount) }}</td>
+                                <td class="text-end">{{ "{:,}".format(tx.wallet_after) }}</td>
+                                <td class="text-end">{{ "{:,}".format(tx.bank_after) }}</td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="6" class="text-center text-muted">暂无流水</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 {% endblock %}

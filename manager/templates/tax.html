@@ -81,6 +81,7 @@
             <div class="card-header">每日资产税配置</div>
             <div class="card-body">
                 <form method="post" action="{{ url_for('admin_bp.update_tax_settings') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="form-check form-switch mb-3">
                         <input class="form-check-input" type="checkbox" role="switch" id="is_tax" name="is_tax" {% if tax_config.is_tax %}checked{% endif %}>
                         <label class="form-check-label" for="is_tax">启用每日资产税</label>
@@ -140,6 +141,11 @@
                             <div class="form-text">{{ "%.2f"|format(tax_config.transfer_tax_rate * 100) }}%</div>
                         </div>
                         <div class="col-md-6">
+                            <label class="form-label" for="debt_surcharge_rate">欠税滞纳金率（每日）</label>
+                            <input class="form-control" type="number" min="0" max="1" step="0.0001" id="debt_surcharge_rate" name="debt_surcharge_rate" value="{{ tax_config.debt_surcharge_rate }}">
+                            <div class="form-text">{{ "%.2f"|format(tax_config.debt_surcharge_rate * 100) }}%，填 0 表示欠税不计滞纳金</div>
+                        </div>
+                        <div class="col-md-6">
                             <label class="form-label" for="tax_record_retention_days">税收记录保留天数</label>
                             <input class="form-control" type="number" min="1" id="tax_record_retention_days" name="tax_record_retention_days" value="{{ tax_config.tax_record_retention_days }}">
                         </div>
@@ -192,6 +198,21 @@
 <div class="card border-danger mb-4">
     <div class="card-header">欠税用户</div>
     <div class="card-body">
+                <form class="row g-2 align-items-end mb-3" method="post" action="{{ url_for('admin_bp.waive_tax_debt') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="col-md-5">
+                        <label class="form-label" for="waive_user_id">用户 ID</label>
+                        <input class="form-control form-control-sm" id="waive_user_id" name="user_id" placeholder="要减免欠税的用户 ID" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label" for="waive_amount">减免金额</label>
+                        <input class="form-control form-control-sm" id="waive_amount" name="amount" placeholder="留空表示全额减免">
+                    </div>
+                    <div class="col-md-3">
+                        <button type="submit" class="btn btn-sm btn-outline-warning w-100">减免欠税</button>
+                    </div>
+                </form>
+
         <div class="table-responsive">
             <table class="table table-sm table-hover align-middle">
                 <thead>

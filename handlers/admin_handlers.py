@@ -366,6 +366,11 @@ async def start_admin(plugin: "FishingPlugin", event: AstrMessageEvent):
             "game_config": plugin.game_config,
             "fishing_service": plugin.fishing_service,
             "log_repo": plugin.log_repo,
+            # 供后台写回配置：优先用框架的 AstrBotConfig.save_config()，
+            # 拿不到时再按 plugin_id 精确定位配置文件。
+            "astrbot_config": getattr(plugin, "astrbot_config", None),
+            "plugin_id": getattr(plugin, "plugin_id", None),
+            "data_dir": getattr(plugin, "data_dir", None),
         }
         app = create_app(secret_key=plugin.secret_key, services=services_to_inject)
         config = Config()

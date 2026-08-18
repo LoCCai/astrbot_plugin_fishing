@@ -1,6 +1,8 @@
+import asyncio
 import functools
 import json
 import os
+import secrets
 import traceback
 from typing import Dict, Any
 from datetime import datetime, timedelta
@@ -25,9 +27,10 @@ admin_bp = Blueprint(
 DEFAULT_TAX_CONFIG = {
     "is_tax": True,
     "threshold": 1_000_000,
-    "asset_scope": "wallet_bank",
+    "asset_scope": "wallet_bank_fixed",
     "deduct_scope": "wallet_bank",
     "taxable_mode": "total",
+    "debt_surcharge_rate": 0.02,
     "step_coins": 100_000,
     "step_rate": 0.01,
     "min_rate": 0.001,
@@ -71,6 +74,10 @@ def create_app(secret_key: str, services: Dict[str, Any]):
     # 键名将转换为大写，例如 'user_service' -> 'USER_SERVICE'
     for service_name, service_instance in services.items():
         app.config[service_name.upper()] = service_instance
+
+    @app.context_processor
+    def inject_csrf_token():
+        return {"csrf_token": _get_csrf_token}
 
     app.register_blueprint(admin_bp, url_prefix="/admin")
 
@@ -162,29 +169,98 @@ def _build_tax_preview(tax_config: Dict[str, Any], levels: int = 8):
     return rows
 
 
-def _find_plugin_config_paths():
-    data_dir = Path(__file__).resolve().parents[3]
-    config_dir = data_dir / "config"
-    if not config_dir.exists():
-        return []
-    candidates = sorted(config_dir.glob("astrbot_plugin_fishing*_config.json"))
-    return [path for path in candidates if path.is_file()]
+def _find_plugin_config_path():
+    """定位本插件自己的配置文件。
+
+    这里不能用 glob 匹配 astrbot_plugin_fishing*：同一台机器上可能装着本插件
+    的其它实例或分支（如 astrbot_plugin_fishing_again），通配会把它们的配置
+    一起覆盖掉。目录层级也不能写死，v2.6.2 已经因为硬编码路径出过一次问题。
+    """
+    plugin_id = current_app.config.get("PLUGIN_ID") or "astrbot_plugin_fishing"
+    candidates = []
+
+    data_dir = current_app.config.get("DATA_DIR")
+    if data_dir:
+        # data/plugin_data/<plugin_id> -> data/config/<plugin_id>_config.json
+        base = Path(data_dir).resolve()
+        for parent in (base, *base.parents):
+            candidate = parent / "config" / f"{plugin_id}_config.json"
+            if candidate.is_file():
+                candidates.append(candidate)
+                break
+
+    if not candidates:
+        for parent in Path(__file__).resolve().parents:
+            candidate = parent / "config" / f"{plugin_id}_config.json"
+            if candidate.is_file():
+                candidates.append(candidate)
+                break
+    return candidates[0] if candidates else None
 
 
 def _persist_tax_config(tax_config: Dict[str, Any]):
+    """把税收配置写回持久化配置。
+
+    优先走框架自带的 save_config()，它知道该写哪个文件、怎么写；只有拿不到
+    框架配置对象时才退化成手写文件。写入一律是「合并」而不是整段替换，避免
+    抹掉表单不认识的键。
+    """
     updated_paths = []
-    for path in _find_plugin_config_paths():
+
+    astrbot_config = current_app.config.get("ASTRBOT_CONFIG")
+    if astrbot_config is not None:
         try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
-            data["tax"] = tax_config
-            path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8-sig",
-            )
-            updated_paths.append(str(path))
+            merged = dict(astrbot_config.get("tax", {}) or {})
+            merged.update(tax_config)
+            astrbot_config["tax"] = merged
+            if hasattr(astrbot_config, "save_config"):
+                astrbot_config.save_config()
+                return ["framework:AstrBotConfig"]
         except Exception as e:
-            logger.warning(f"写入税收配置失败: {path} - {e}")
+            logger.warning(f"通过框架保存税收配置失败，回退到直接写文件: {e}")
+
+    path = _find_plugin_config_path()
+    if not path:
+        return updated_paths
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        merged = dict(data.get("tax", {}) or {})
+        merged.update(tax_config)
+        data["tax"] = merged
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8-sig",
+        )
+        updated_paths.append(str(path))
+    except Exception as e:
+        logger.warning(f"写入税收配置失败: {path} - {e}")
     return updated_paths
+
+
+def _get_csrf_token() -> str:
+    token = session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
+def csrf_protect(f):
+    """校验表单里的一次性令牌。
+
+    这些表单能改全服税率、直接增减玩家资产，不能只靠登录 Cookie 就放行。
+    """
+    @functools.wraps(f)
+    async def decorated_function(*args, **kwargs):
+        if request.method == "POST":
+            form = await request.form
+            submitted = form.get("csrf_token", "")
+            expected = session.get("_csrf_token", "")
+            if not expected or not secrets.compare_digest(str(submitted), str(expected)):
+                await flash("表单已过期或来源不可信，请刷新页面后重试。", "danger")
+                return redirect(request.referrer or url_for("admin_bp.index"))
+        return await f(*args, **kwargs)
+    return decorated_function
 
 @admin_bp.route("/login", methods=["GET", "POST"])
 async def login():
@@ -947,6 +1023,7 @@ async def manage_bank():
     totals = bank_service.get_admin_totals()
     fixed_deposits = bank_service.get_fixed_deposits_for_admin(search=search or None, limit=100)
     fixed_terms = bank_service.get_fixed_terms()
+    transactions = bank_service.get_transactions(user_id=search or None, limit=100)
 
     return await render_template(
         "bank.html",
@@ -957,8 +1034,81 @@ async def manage_bank():
         totals=totals,
         fixed_deposits=fixed_deposits,
         fixed_terms=fixed_terms,
+        transactions=transactions,
         now=datetime.now(),
     )
+
+
+@admin_bp.route("/bank/adjust", methods=["POST"])
+@login_required
+@admin_required
+@csrf_protect
+async def adjust_bank_balance():
+    bank_service = current_app.config["BANK_SERVICE"]
+    form = await request.form
+    user_id = (form.get("user_id") or "").strip()
+    try:
+        delta = int(form.get("delta", 0))
+    except ValueError:
+        await flash("调整金额必须是整数。", "danger")
+        return redirect(url_for("admin_bp.manage_bank"))
+
+    if not user_id or delta == 0:
+        await flash("请填写用户 ID 与非零的调整金额。", "warning")
+        return redirect(url_for("admin_bp.manage_bank"))
+
+    result = bank_service.admin_adjust_balance(user_id, delta, form.get("remark", ""))
+    await flash(result["message"], "success" if result["success"] else "danger")
+    return redirect(url_for("admin_bp.manage_bank"))
+
+
+@admin_bp.route("/bank/waive-debt", methods=["POST"])
+@login_required
+@admin_required
+@csrf_protect
+async def waive_tax_debt():
+    bank_service = current_app.config["BANK_SERVICE"]
+    form = await request.form
+    user_id = (form.get("user_id") or "").strip()
+    amount_raw = (form.get("amount") or "").strip()
+    if not user_id:
+        await flash("请填写用户 ID。", "warning")
+        return redirect(url_for("admin_bp.manage_tax"))
+
+    amount = None
+    if amount_raw:
+        try:
+            amount = int(amount_raw)
+        except ValueError:
+            await flash("减免金额必须是整数，留空表示全额减免。", "danger")
+            return redirect(url_for("admin_bp.manage_tax"))
+
+    result = bank_service.admin_waive_tax_debt(user_id, amount)
+    await flash(result["message"], "success" if result["success"] else "danger")
+    return redirect(url_for("admin_bp.manage_tax"))
+
+
+@admin_bp.route("/bank/cancel-reservation", methods=["POST"])
+@login_required
+@admin_required
+@csrf_protect
+async def cancel_bank_reservation():
+    bank_service = current_app.config["BANK_SERVICE"]
+    form = await request.form
+    user_id = (form.get("user_id") or "").strip()
+    try:
+        reservation_id = int(form.get("reservation_id", 0))
+    except ValueError:
+        await flash("预约编号必须是整数。", "danger")
+        return redirect(url_for("admin_bp.manage_bank"))
+
+    if not user_id or reservation_id <= 0:
+        await flash("请填写用户 ID 与预约编号。", "warning")
+        return redirect(url_for("admin_bp.manage_bank"))
+
+    result = bank_service.admin_cancel_reservation(user_id, reservation_id)
+    await flash(result["message"], "success" if result["success"] else "danger")
+    return redirect(url_for("admin_bp.manage_bank"))
 
 @admin_bp.route("/tax")
 @login_required
@@ -1022,6 +1172,7 @@ async def manage_tax():
 @admin_bp.route("/tax/update", methods=["POST"])
 @login_required
 @admin_required
+@csrf_protect
 async def update_tax_settings():
     form = await request.form
     try:
@@ -1046,6 +1197,7 @@ async def update_tax_settings():
             "min_rate": max(float(form.get("min_rate", DEFAULT_TAX_CONFIG["min_rate"])), 0.0),
             "max_rate": max(float(form.get("max_rate", DEFAULT_TAX_CONFIG["max_rate"])), 0.0),
             "transfer_tax_rate": max(float(form.get("transfer_tax_rate", DEFAULT_TAX_CONFIG["transfer_tax_rate"])), 0.0),
+            "debt_surcharge_rate": max(float(form.get("debt_surcharge_rate", DEFAULT_TAX_CONFIG["debt_surcharge_rate"])), 0.0),
             "tax_record_retention_days": max(int(form.get("tax_record_retention_days", DEFAULT_TAX_CONFIG["tax_record_retention_days"])), 1),
             "tax_record_cleanup_batch_size": max(int(form.get("tax_record_cleanup_batch_size", DEFAULT_TAX_CONFIG["tax_record_cleanup_batch_size"])), 1),
         }
@@ -1069,7 +1221,9 @@ async def update_tax_settings():
             if tax_config["is_tax"]:
                 fishing_service.start_daily_tax_task()
             else:
-                fishing_service.stop_daily_tax_task()
+                # stop 内部会 join 线程最多 5 秒，直接在协程里调用会把整个
+                # 后台卡住，丢给线程池执行。
+                await asyncio.to_thread(fishing_service.stop_daily_tax_task)
 
         if updated_paths:
             await flash(f"税收配置已保存，并同步写入 {len(updated_paths)} 个配置文件。", "success")

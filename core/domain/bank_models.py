@@ -26,8 +26,32 @@ class BankWithdrawReservation:
     fee_amount: int
     status: str
     ready_at: datetime
+    expires_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+
+@dataclass
+class BankTransaction:
+    """银行资金流水。
+
+    wallet_delta / bank_delta 只记录真实发生的余额变化。手续费、违约金这类
+    被销毁的金额，以及已经含在结算行里的定期利息，都只写 amount 而把两个
+    delta 留成 0，这样把 delta 求和就是真实的资金流，把 amount 按类型汇总
+    则能看出造币（利息）与销毁（手续费、违约金）各有多少。
+    """
+    transaction_id: Optional[int]
+    user_id: str
+    tx_type: str
+    amount: int
+    wallet_delta: int = 0
+    bank_delta: int = 0
+    wallet_after: int = 0
+    bank_after: int = 0
+    locked_after: int = 0
+    ref_id: Optional[int] = None
+    remark: Optional[str] = None
+    created_at: Optional[datetime] = None
 
 
 @dataclass

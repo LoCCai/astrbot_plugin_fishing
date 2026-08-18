@@ -62,6 +62,52 @@ class DatabaseConnectionManager:
             logger.error(f"数据库操作发生未知错误: {e}")
             raise
     
+    @contextmanager
+    def transaction(self, immediate: bool = True):
+        """在单个写事务内执行多条语句，异常时整体回滚并释放写锁。
+
+        与 get_connection 的区别是显式接管 BEGIN/COMMIT，供需要跨多张表
+        保持原子性的仓储使用（如银行的钱包<->银行余额划转）。
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+            yield cursor
+            conn.commit()
+        except BaseException:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            raise
+
+    def run_in_transaction(self, operation, immediate: bool = True):
+        """执行 operation(cursor)，遇到数据库锁定时重放整个事务。
+
+        事务失败会整体回滚，因此重放是安全的；operation 不应带有数据库之外
+        的副作用。
+        """
+        for attempt in range(self.max_retries + 1):
+            try:
+                with self.transaction(immediate=immediate) as cursor:
+                    return operation(cursor)
+            except sqlite3.OperationalError as e:
+                is_locked = "database is locked" in str(e).lower()
+                self.close_connection()
+                if not is_locked or attempt >= self.max_retries:
+                    raise
+
+                delay = self.retry_delay * (attempt + 1)
+                logger.warning(
+                    f"数据库锁定，事务第 {attempt + 1}/{self.max_retries} 次重试，"
+                    f"等待 {delay:.2f}s: {e}"
+                )
+                time.sleep(delay)
+            except Exception:
+                self.close_connection()
+                raise
+
     def close_connection(self):
         """关闭当前线程的数据库连接"""
         if hasattr(self._local, "connection"):

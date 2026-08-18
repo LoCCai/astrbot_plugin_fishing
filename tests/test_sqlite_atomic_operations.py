@@ -1,3 +1,4 @@
+import contextlib
 import importlib
 import sqlite3
 import sys
@@ -28,7 +29,65 @@ def _install_astrbot_stub():
     sys.modules.setdefault("astrbot.api", api)
 
 
-class SqliteAtomicOperationTests(unittest.TestCase):
+@contextlib.contextmanager
+def _sqlite(db_path):
+    """提交并关闭的连接助手。
+
+    sqlite3.Connection 的 with 只负责提交/回滚事务，不会关闭连接。测试里直接
+    用 `with sqlite3.connect(...)` 会把文件句柄一直挂着，Windows 上删临时目录
+    时报 PermissionError。
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
+class _ClosesConnectionsMixin:
+    """仓储持有线程本地长连接，测试结束前必须显式关闭。
+
+    不关的话，TemporaryDirectory 在 Windows 上会因为 fish.db 仍被占用而删除
+    失败，断言明明通过、用例却报 PermissionError。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._tracked_closables = []
+
+    def tearDown(self):
+        for closable in self._tracked_closables:
+            try:
+                closable.close_connection()
+            except Exception:
+                pass
+        self._tracked_closables.clear()
+        super().tearDown()
+
+    def _track(self, closable):
+        self._tracked_closables.append(closable)
+        return closable
+
+    @contextlib.contextmanager
+    def temp_workspace(self):
+        """临时目录 + 退出前关闭其中打开的所有仓储连接。
+
+        tearDown 里关来不及：那时 TemporaryDirectory 已经在删目录了。
+        """
+        with TemporaryDirectory() as temp_dir:
+            try:
+                yield temp_dir
+            finally:
+                for closable in self._tracked_closables:
+                    try:
+                        closable.close_connection()
+                    except Exception:
+                        pass
+                self._tracked_closables.clear()
+
+
+class SqliteAtomicOperationTests(_ClosesConnectionsMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         _install_astrbot_stub()
@@ -38,7 +97,7 @@ class SqliteAtomicOperationTests(unittest.TestCase):
         cls.user_module = importlib.import_module("core.repositories.sqlite_user_repo")
 
     def _create_database(self, db_path: Path):
-        with sqlite3.connect(db_path) as conn:
+        with _sqlite(db_path) as conn:
             conn.executescript(
                 """
                 PRAGMA journal_mode = WAL;
@@ -94,17 +153,17 @@ class SqliteAtomicOperationTests(unittest.TestCase):
             )
 
     def test_fish_sale_updates_inventory_and_coins_atomically(self):
-        with TemporaryDirectory() as temp_dir:
+        with self.temp_workspace() as temp_dir:
             db_path = Path(temp_dir) / "fish.db"
             self._create_database(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with _sqlite(db_path) as conn:
                 conn.execute("INSERT INTO user_fish_inventory VALUES ('u1', 1, 1, 3)")
 
-            repo = self.inventory_module.SqliteInventoryRepository(str(db_path))
+            repo = self._track(self.inventory_module.SqliteInventoryRepository(str(db_path)))
             result = repo.sell_fish_atomic("u1")
 
             self.assertEqual(result["total_value"], 60)
-            with sqlite3.connect(db_path) as conn:
+            with _sqlite(db_path) as conn:
                 self.assertEqual(conn.execute("SELECT coins FROM users").fetchone()[0], 160)
                 self.assertEqual(
                     conn.execute("SELECT COUNT(*) FROM user_fish_inventory").fetchone()[0],
@@ -112,21 +171,21 @@ class SqliteAtomicOperationTests(unittest.TestCase):
                 )
 
     def test_fish_sale_rolls_back_inventory_when_credit_fails(self):
-        with TemporaryDirectory() as temp_dir:
+        with self.temp_workspace() as temp_dir:
             db_path = Path(temp_dir) / "fish.db"
             self._create_database(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with _sqlite(db_path) as conn:
                 conn.execute("INSERT INTO user_fish_inventory VALUES ('u1', 1, 0, 2)")
                 conn.execute(
                     "CREATE TRIGGER reject_credit BEFORE UPDATE ON users "
                     "BEGIN SELECT RAISE(ABORT, 'forced credit failure'); END"
                 )
 
-            repo = self.inventory_module.SqliteInventoryRepository(str(db_path))
+            repo = self._track(self.inventory_module.SqliteInventoryRepository(str(db_path)))
             with self.assertRaises(sqlite3.IntegrityError):
                 repo.sell_fish_atomic("u1")
 
-            with sqlite3.connect(db_path) as conn:
+            with _sqlite(db_path) as conn:
                 self.assertEqual(conn.execute("SELECT coins FROM users").fetchone()[0], 100)
                 self.assertEqual(
                     conn.execute("SELECT quantity FROM user_fish_inventory").fetchone()[0],
@@ -134,18 +193,18 @@ class SqliteAtomicOperationTests(unittest.TestCase):
                 )
 
     def test_smart_deduction_rolls_back_pond_when_aquarium_is_insufficient(self):
-        with TemporaryDirectory() as temp_dir:
+        with self.temp_workspace() as temp_dir:
             db_path = Path(temp_dir) / "fish.db"
             self._create_database(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with _sqlite(db_path) as conn:
                 conn.execute("INSERT INTO user_fish_inventory VALUES ('u1', 1, 0, 2)")
                 conn.execute("INSERT INTO user_aquarium VALUES ('u1', 1, 0, 1)")
 
-            repo = self.inventory_module.SqliteInventoryRepository(str(db_path))
+            repo = self._track(self.inventory_module.SqliteInventoryRepository(str(db_path)))
             with self.assertRaises(ValueError):
                 repo.deduct_fish_smart("u1", 1, 4)
 
-            with sqlite3.connect(db_path) as conn:
+            with _sqlite(db_path) as conn:
                 self.assertEqual(
                     conn.execute("SELECT quantity FROM user_fish_inventory").fetchone()[0],
                     2,
@@ -156,17 +215,17 @@ class SqliteAtomicOperationTests(unittest.TestCase):
                 )
 
     def test_fishing_settlement_rolls_back_everything_when_log_insert_fails(self):
-        with TemporaryDirectory() as temp_dir:
+        with self.temp_workspace() as temp_dir:
             db_path = Path(temp_dir) / "fish.db"
             self._create_database(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with _sqlite(db_path) as conn:
                 conn.execute("INSERT INTO user_rods VALUES (7, 'u1', 1, 5, 1, 0)")
                 conn.execute(
                     "CREATE TRIGGER reject_log BEFORE INSERT ON fishing_records "
                     "BEGIN SELECT RAISE(ABORT, 'forced log failure'); END"
                 )
 
-            repo = self.inventory_module.SqliteInventoryRepository(str(db_path))
+            repo = self._track(self.inventory_module.SqliteInventoryRepository(str(db_path)))
             with self.assertRaises(sqlite3.IntegrityError):
                 repo.settle_fishing_catch(
                     user_id="u1", fish_id=1, total_catches=1, quality_level=0,
@@ -177,7 +236,7 @@ class SqliteAtomicOperationTests(unittest.TestCase):
                     accessory_instance_id=None, bait_id=None,
                 )
 
-            with sqlite3.connect(db_path) as conn:
+            with _sqlite(db_path) as conn:
                 self.assertEqual(conn.execute("SELECT coins FROM users").fetchone()[0], 100)
                 self.assertEqual(conn.execute("SELECT current_durability FROM user_rods").fetchone()[0], 5)
                 self.assertEqual(conn.execute("SELECT rare_fish_caught_today FROM fishing_zones").fetchone()[0], 0)
@@ -185,13 +244,13 @@ class SqliteAtomicOperationTests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT total_fishing_count FROM users").fetchone()[0], 0)
 
     def test_auto_fishing_toggle_does_not_overwrite_coins(self):
-        with TemporaryDirectory() as temp_dir:
+        with self.temp_workspace() as temp_dir:
             db_path = Path(temp_dir) / "fish.db"
             self._create_database(db_path)
-            repo = self.user_module.SqliteUserRepository(str(db_path))
+            repo = self._track(self.user_module.SqliteUserRepository(str(db_path)))
 
             self.assertTrue(repo.toggle_auto_fishing("u1"))
-            with sqlite3.connect(db_path) as conn:
+            with _sqlite(db_path) as conn:
                 self.assertEqual(
                     conn.execute(
                         "SELECT auto_fishing_enabled, coins FROM users WHERE user_id = 'u1'"
@@ -200,33 +259,33 @@ class SqliteAtomicOperationTests(unittest.TestCase):
                 )
 
     def test_coin_deduction_is_atomic_and_capped_at_balance(self):
-        with TemporaryDirectory() as temp_dir:
+        with self.temp_workspace() as temp_dir:
             db_path = Path(temp_dir) / "fish.db"
             self._create_database(db_path)
-            repo = self.user_module.SqliteUserRepository(str(db_path))
+            repo = self._track(self.user_module.SqliteUserRepository(str(db_path)))
 
             deducted, balance = repo.deduct_coins_up_to("u1", 130)
 
             self.assertEqual((deducted, balance), (100, 0))
-            with sqlite3.connect(db_path) as conn:
+            with _sqlite(db_path) as conn:
                 self.assertEqual(conn.execute("SELECT coins FROM users").fetchone()[0], 0)
 
 
-class ConnectionRetryTests(unittest.TestCase):
+class ConnectionRetryTests(_ClosesConnectionsMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         _install_astrbot_stub()
         cls.manager_module = importlib.import_module("core.database.connection_manager")
 
     def test_execute_with_retry_replays_locked_statement(self):
-        with TemporaryDirectory() as temp_dir:
+        with self.temp_workspace() as temp_dir:
             db_path = Path(temp_dir) / "fish.db"
-            with sqlite3.connect(db_path) as conn:
+            with _sqlite(db_path) as conn:
                 conn.execute("CREATE TABLE values_table (value INTEGER)")
 
-            manager = self.manager_module.DatabaseConnectionManager(
+            manager = self._track(self.manager_module.DatabaseConnectionManager(
                 str(db_path), timeout=0, max_retries=2, retry_delay=0
-            )
+            ))
             blocker = sqlite3.connect(db_path)
             blocker.execute("BEGIN IMMEDIATE")
             blocker.execute("INSERT INTO values_table VALUES (1)")
@@ -243,8 +302,10 @@ class ConnectionRetryTests(unittest.TestCase):
             with patch.object(self.manager_module.time, "sleep", release_then_continue):
                 manager.execute_with_retry("INSERT INTO values_table VALUES (?)", (2,))
 
+            blocker.close()
+
             self.assertEqual(calls, 1)
-            with sqlite3.connect(db_path) as conn:
+            with _sqlite(db_path) as conn:
                 self.assertEqual(conn.execute("SELECT value FROM values_table").fetchall(), [(2,)])
 
 

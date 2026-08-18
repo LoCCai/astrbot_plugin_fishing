@@ -47,6 +47,21 @@ from .core.services.bank_service import BankService
 
 from .core.database.migration import run_migrations
 
+# 计税口径的合法取值。填错一个字符会静默改变全服的计税结果，因此在读取配置时
+# 就要校验并告警，而不是等仓储层用 == 比较时悄悄走进另一条分支。
+ASSET_SCOPES = ("wallet", "wallet_bank", "wallet_bank_fixed")
+DEDUCT_SCOPES = ("wallet", "bank", "wallet_bank")
+TAXABLE_MODES = ("total", "excess")
+
+
+def _validated_option(value, allowed, default, label: str):
+    if value is None:
+        return default
+    if value in allowed:
+        return value
+    logger.warning(f"配置项 {label} 的值 {value!r} 不在 {allowed} 内，已回落为 {default!r}")
+    return default
+
 # ==========================================================
 # 导入所有指令函数
 # ==========================================================
@@ -77,6 +92,9 @@ class FishingPlugin(Star):
         super().__init__(context)
 
         # --- 1. 加载配置 ---
+        # 保留框架配置对象本身：Web 后台改税率时要用它的 save_config() 写回，
+        # 比自己猜配置文件路径可靠。
+        self.astrbot_config = config
         # 从新的嵌套结构中读取配置
         tax_config = config.get("tax", {})
         self.is_tax = tax_config.get("is_tax", True)  # 是否开启税收
@@ -174,9 +192,16 @@ class FishingPlugin(Star):
             "tax": {
                 "is_tax": self.is_tax,
                 "threshold": self.threshold,
-                "asset_scope": tax_config.get("asset_scope", "wallet_bank"),
-                "deduct_scope": tax_config.get("deduct_scope", "wallet_bank"),
-                "taxable_mode": tax_config.get("taxable_mode", "total"),
+                "asset_scope": _validated_option(
+                    tax_config.get("asset_scope"), ASSET_SCOPES, "wallet_bank_fixed", "tax.asset_scope"
+                ),
+                "deduct_scope": _validated_option(
+                    tax_config.get("deduct_scope"), DEDUCT_SCOPES, "wallet_bank", "tax.deduct_scope"
+                ),
+                "taxable_mode": _validated_option(
+                    tax_config.get("taxable_mode"), TAXABLE_MODES, "total", "tax.taxable_mode"
+                ),
+                "debt_surcharge_rate": tax_config.get("debt_surcharge_rate", 0.02),
                 "step_coins": self.step_coins,
                 "step_rate": self.step_rate,
                 "min_rate": self.min_rate,
@@ -231,7 +256,9 @@ class FishingPlugin(Star):
                 "withdraw_fee_rate": bank_config.get("withdraw_fee_rate", 0.03),
                 "reservation_threshold": bank_config.get("reservation_threshold", 5000000),
                 "reservation_delay_hours": bank_config.get("reservation_delay_hours", 24),
+                "reservation_expire_hours": bank_config.get("reservation_expire_hours", 72),
                 "max_pending_reservations": bank_config.get("max_pending_reservations", 1),
+                "block_inflow_when_in_debt": bank_config.get("block_inflow_when_in_debt", True),
                 "fixed_deposit": bank_config.get("fixed_deposit", {}),
             },
         }
@@ -320,6 +347,10 @@ class FishingPlugin(Star):
         # 初始化拉杆机服务
         self.slot_service = SlotService(self.user_repo, self.log_repo, self.game_config, data_dir=self.data_dir)
         self.bank_service = BankService(self.bank_repo, self.user_repo, self.log_repo, self.game_config)
+        # 银行依赖是后注入的：总资产榜、转账欠税校验和每日定期结算都要用到，
+        # 但这些服务的构造早于 BankService。
+        self.user_service.bank_repo = self.bank_repo
+        self.fishing_service.bank_service = self.bank_service
         
         # 让骰宝的记录也写入统一的读博记录
         self.sicbo_service.set_gambling_record_callback(self.blackjack_service._add_gambling_record)
@@ -337,7 +368,8 @@ class FishingPlugin(Star):
             self.user_repo,
             default_interest_rate=loan_config.get("default_interest_rate", 0.05),
             system_loan_ratio=loan_config.get("system_loan_ratio", 0.10),
-            system_loan_days=loan_config.get("system_loan_days", 7)
+            system_loan_days=loan_config.get("system_loan_days", 7),
+            collect_from_fixed=loan_config.get("collect_from_fixed", True)
         )
         
         # 初始化交易所处理器
@@ -858,6 +890,13 @@ class FishingPlugin(Star):
     async def bank_withdraw(self, event: AstrMessageEvent):
         """快捷取款。用法：钓鱼取款 金额"""
         async for r in bank_handlers.withdraw(self, event):
+            yield r
+
+    @filter.command("钓鱼还税", alias={"还税"})
+    async def bank_repay_tax(self, event: AstrMessageEvent):
+        """从钱包缴清欠税。用法：钓鱼还税 [金额]"""
+        args = event.message_str.strip().split()
+        async for r in bank_handlers.repay_tax(self, event, amount_arg=args[1] if len(args) >= 2 else None):
             yield r
 
     @filter.command("转账", alias={"赠送"})
@@ -1751,6 +1790,6 @@ class FishingPlugin(Star):
             
         if self.web_admin_task:
             self.web_admin_task.cancel()
-        for repo in (self.loan_repo, self.user_repo, self.inventory_repo):
+        for repo in (self.loan_repo, self.user_repo, self.inventory_repo, self.bank_repo):
             repo.close_connection()
         logger.info("钓鱼插件已成功终止。")

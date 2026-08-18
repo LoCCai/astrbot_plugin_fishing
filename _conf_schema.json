@@ -36,13 +36,13 @@
       "asset_scope": {
         "description": "每日资产税统计范围",
         "type": "string",
-        "hint": "wallet=只统计钱包，银行余额免税，玩家可存入银行规避资产税；wallet_bank=钱包+银行活期（默认）；wallet_bank_fixed=钱包+银行活期+进行中定期本金",
-        "default": "wallet_bank"
+        "hint": "wallet=只统计钱包（银行与定期免税，玩家可存入银行完全规避资产税）；wallet_bank=钱包+银行活期（定期仍可避税）；wallet_bank_fixed=钱包+银行活期+进行中定期本金（默认，堵死靠定期避税）",
+        "default": "wallet_bank_fixed"
       },
       "deduct_scope": {
         "description": "每日资产税扣款来源",
         "type": "string",
-        "hint": "wallet=只从钱包扣；bank=只从银行活期可用余额扣；wallet_bank=钱包优先，不足再扣银行活期可用余额（默认）",
+        "hint": "wallet=只从钱包扣；bank=只从银行活期可用余额扣；wallet_bank=钱包优先，不足再扣银行活期可用余额（默认）。预约锁定的资金和定期本金都扣不到，差额会转为欠税",
         "default": "wallet_bank"
       },
       "taxable_mode": {
@@ -74,6 +74,14 @@
         "type": "float",
         "hint": "税收的最大税率，超过此值不再增加",
         "default": 0.2
+      },
+      "debt_surcharge_rate": {
+        "description": "欠税滞纳金率（每日）",
+        "type": "float",
+        "hint": "可扣资产不足转为欠税后，每天按此比例累计滞纳金。0 表示欠税不额外增长",
+        "default": 0.02,
+        "min": 0.0,
+        "max": 1.0
       },
       "transfer_tax_rate": {
         "description": "转账手续费率",
@@ -124,7 +132,7 @@
       "reservation_threshold": {
         "description": "大额取款预约门槛",
         "type": "int",
-        "hint": "单笔取款达到该金额时需要先预约",
+        "hint": "当日累计取款达到该金额时需要先预约。按累计而非单笔判定，否则连续取「门槛-1」就能完全绕开预约",
         "default": 5000000
       },
       "reservation_delay_hours": {
@@ -133,11 +141,23 @@
         "hint": "预约后需要等待多少小时才能确认取款",
         "default": 24
       },
+      "reservation_expire_hours": {
+        "description": "大额取款预约过期小时数",
+        "type": "int",
+        "hint": "从可确认时间起算，超过该时长仍未确认的预约自动作废并释放锁定资金",
+        "default": 72
+      },
       "max_pending_reservations": {
         "description": "最大待确认预约数",
         "type": "int",
         "hint": "每个用户最多可同时持有的待确认预约数量",
         "default": 1
+      },
+      "block_inflow_when_in_debt": {
+        "description": "欠税未缴时禁止转出资产",
+        "type": "bool",
+        "hint": "开启后欠税玩家不能存款、开定期或转账，只能先还清欠税。关闭则欠税几乎没有约束力",
+        "default": true
       },
       "fixed_deposit": {
         "description": "银行定期存款配置",
@@ -166,6 +186,12 @@
             "type": "int",
             "hint": "每个用户最多可同时持有的进行中定期存款数量",
             "default": 5
+          },
+          "auto_settle_matured": {
+            "description": "到期定期自动结算",
+            "type": "bool",
+            "hint": "开启后每日结算时自动把到期定期的本金与收益打回活期，玩家无需手动领取",
+            "default": true
           },
           "early_withdraw_penalty_rate": {
             "description": "提前取出违约金率",
@@ -399,7 +425,7 @@
           },
           "fish_oil": {
             "type": "float",
-            "default": 0.10,
+            "default": 0.1,
             "description": "鱼油基础波动率（±10%）"
           }
         }
@@ -493,7 +519,7 @@
       },
       "system_loan_ratio": {
         "type": "float",
-        "default": 0.10,
+        "default": 0.1,
         "description": "系统借款额度比例（10%）",
         "hint": "系统借款额度 = 玩家历史最高金币 × 此比例"
       },
@@ -502,6 +528,12 @@
         "default": 7,
         "description": "系统借款还款期限（天）",
         "hint": "超过此期限未还款将标记为逾期，并禁止参与骰宝和擦弹游戏"
+      },
+      "collect_from_fixed": {
+        "description": "强制收款可解约定期存款",
+        "type": "bool",
+        "hint": "开启后逾期催收会依次扣钱包、银行活期，仍不足则强制解约定期（不额外收违约金）。关闭则借款人把钱押成定期即可躲过催收",
+        "default": true
       }
     }
   },
