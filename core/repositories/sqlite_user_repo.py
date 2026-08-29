@@ -1,11 +1,11 @@
 import dataclasses
 import sqlite3
-import threading
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 from astrbot.api import logger
 
+from ..database.connection_manager import DatabaseConnectionManager
 from ..domain.models import User, TaxRecord
 from .abstract_repository import AbstractUserRepository
 
@@ -14,28 +14,14 @@ class SqliteUserRepository(AbstractUserRepository):
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._local = threading.local()
+        self._connection_manager = DatabaseConnectionManager(db_path)
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = getattr(self._local, "connection", None)
-        if conn is None:
-            conn = sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON;")
-            self._local.connection = conn
-        return conn
+        return self._connection_manager.connection()
 
     def close_connection(self) -> None:
         """关闭当前线程的连接，退出后台任务时释放线程资源。"""
-        conn = getattr(self._local, "connection", None)
-        if conn is None:
-            return
-        try:
-            if conn.in_transaction:
-                conn.rollback()
-            conn.close()
-        finally:
-            delattr(self._local, "connection")
+        self._connection_manager.close_connection()
 
     def _row_to_user(self, row: sqlite3.Row) -> Optional[User]:
         """
@@ -283,11 +269,29 @@ class SqliteUserRepository(AbstractUserRepository):
     def _get_top_users_base_query(self, order_by_column: str, limit: int) -> List[User]:
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            if order_by_column not in ["total_fishing_count", "coins", "total_weight_caught", "max_coins"]:
+            # 排序列只能是脚本内固定集合，逐项使用字面量 SQL
+            if order_by_column == "total_fishing_count":
+                cursor.execute(
+                    "SELECT * FROM users WHERE user_id != 'SYSTEM' ORDER BY total_fishing_count DESC LIMIT ?",
+                    (limit,),
+                )
+            elif order_by_column == "coins":
+                cursor.execute(
+                    "SELECT * FROM users WHERE user_id != 'SYSTEM' ORDER BY coins DESC LIMIT ?",
+                    (limit,),
+                )
+            elif order_by_column == "total_weight_caught":
+                cursor.execute(
+                    "SELECT * FROM users WHERE user_id != 'SYSTEM' ORDER BY total_weight_caught DESC LIMIT ?",
+                    (limit,),
+                )
+            elif order_by_column == "max_coins":
+                cursor.execute(
+                    "SELECT * FROM users WHERE user_id != 'SYSTEM' ORDER BY max_coins DESC LIMIT ?",
+                    (limit,),
+                )
+            else:
                 raise ValueError("Invalid order by column")
-            
-            query = f"SELECT * FROM users WHERE user_id != 'SYSTEM' ORDER BY {order_by_column} DESC LIMIT ?"
-            cursor.execute(query, (limit,))
             return [self._row_to_user(row) for row in cursor.fetchall()]
 
     def get_top_users_by_fish_count(self, limit: int) -> List[User]:

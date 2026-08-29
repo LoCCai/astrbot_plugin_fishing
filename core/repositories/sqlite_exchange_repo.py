@@ -1,8 +1,7 @@
-import sqlite3
-import threading
 from datetime import datetime, timedelta
 from typing import List, Optional
 
+from ..database.connection_manager import DatabaseConnectionManager
 from ..domain.models import Commodity, Exchange, UserCommodity
 from .abstract_repository import AbstractExchangeRepository
 
@@ -10,13 +9,18 @@ from .abstract_repository import AbstractExchangeRepository
 class SqliteExchangeRepository(AbstractExchangeRepository):
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._local = threading.local()
+        # 保留历史行为：无行工厂（调用方按位置解包元组）、无类型解析、关闭外键
+        self._connection_manager = DatabaseConnectionManager(
+            db_path, detect_types=0, foreign_keys=False, row_factory=None
+        )
 
     def _get_connection(self):
         """获取数据库连接"""
-        if not hasattr(self._local, 'connection'):
-            self._local.connection = sqlite3.connect(self.db_path)
-        return self._local.connection
+        return self._connection_manager.connection()
+
+    def close_connection(self) -> None:
+        """关闭当前线程的连接，退出后台任务时释放线程资源。"""
+        self._connection_manager.close_connection()
 
     def get_all_commodities(self) -> List[Commodity]:
         conn = self._get_connection()

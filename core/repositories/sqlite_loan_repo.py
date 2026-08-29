@@ -3,12 +3,12 @@
 """
 
 import sqlite3
-import threading
 from datetime import datetime
 from typing import Optional, List
 
 from astrbot.api import logger
 
+from ..database.connection_manager import DatabaseConnectionManager
 from ..domain.loan_models import Loan
 
 
@@ -17,32 +17,18 @@ class SqliteLoanRepository:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._local = threading.local()
+        # 不使用 detect_types：loans 表列类型为 TIMESTAMP，
+        # Python 内置 convert_timestamp 解析器极度脆弱，
+        # 任何非 "YYYY-MM-DD HH:MM:SS" 格式都会崩溃。
+        # 改为在 _row_to_loan → _parse_datetime 中手动解析。
+        self._connection_manager = DatabaseConnectionManager(db_path, detect_types=0)
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = getattr(self._local, "connection", None)
-        if conn is None:
-            # 不使用 detect_types：loans 表列类型为 TIMESTAMP，
-            # Python 内置 convert_timestamp 解析器极度脆弱，
-            # 任何非 "YYYY-MM-DD HH:MM:SS" 格式都会崩溃。
-            # 改为在 _row_to_loan → _parse_datetime 中手动解析。
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON;")
-            self._local.connection = conn
-        return conn
+        return self._connection_manager.connection()
 
     def close_connection(self) -> None:
         """Close the connection owned by the current thread."""
-        conn = getattr(self._local, "connection", None)
-        if conn is None:
-            return
-        try:
-            if conn.in_transaction:
-                conn.rollback()
-            conn.close()
-        finally:
-            delattr(self._local, "connection")
+        self._connection_manager.close_connection()
 
     def _row_to_loan(self, row: sqlite3.Row) -> Optional[Loan]:
         """将数据库行转换为Loan对象"""

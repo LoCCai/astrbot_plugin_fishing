@@ -2,13 +2,14 @@
 红包数据仓储层
 """
 
+import json
 import sqlite3
-import threading
 from datetime import datetime
 from typing import Optional, List
 
 from astrbot.api import logger
 
+from ..database.connection_manager import DatabaseConnectionManager
 from ..domain.models import RedPacket, RedPacketRecord
 
 
@@ -17,16 +18,14 @@ class SqliteRedPacketRepository:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._local = threading.local()
+        self._connection_manager = DatabaseConnectionManager(db_path)
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = getattr(self._local, "connection", None)
-        if conn is None:
-            conn = sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON;")
-            self._local.connection = conn
-        return conn
+        return self._connection_manager.connection()
+
+    def close_connection(self) -> None:
+        """关闭当前线程的连接，退出后台任务时释放线程资源。"""
+        self._connection_manager.close_connection()
 
     def _parse_datetime(self, dt_val):
         """解析日期时间"""
@@ -206,17 +205,18 @@ class SqliteRedPacketRepository:
                 return 0
             
             # 删除这些红包的领取记录
-            placeholders = ','.join('?' * len(packet_ids))
-            cursor.execute(f"""
-                DELETE FROM red_packet_records 
-                WHERE packet_id IN ({placeholders})
-            """, packet_ids)
-            
+            cursor.execute(
+                "DELETE FROM red_packet_records "
+                "WHERE packet_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(packet_ids),),
+            )
+
             # 删除红包本身
-            cursor.execute(f"""
-                DELETE FROM red_packets 
-                WHERE packet_id IN ({placeholders})
-            """, packet_ids)
+            cursor.execute(
+                "DELETE FROM red_packets "
+                "WHERE packet_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(packet_ids),),
+            )
             
             # 检查是否还有红包记录
             cursor.execute("SELECT COUNT(*) FROM red_packets")
@@ -270,12 +270,14 @@ class SqliteRedPacketRepository:
             
             # 标记这些红包为已过期
             packet_ids = [p[0] for p in packets_to_revoke]
-            placeholders = ','.join('?' * len(packet_ids))
-            cursor.execute(f"""
-                UPDATE red_packets 
+            cursor.execute(
+                """
+                UPDATE red_packets
                 SET is_expired = 1, remaining_count = 0, remaining_amount = 0
-                WHERE packet_id IN ({placeholders})
-            """, packet_ids)
+                WHERE packet_id IN (SELECT value FROM json_each(?))
+                """,
+                (json.dumps(packet_ids),),
+            )
             
             conn.commit()
             
@@ -342,11 +344,11 @@ class SqliteRedPacketRepository:
                 return 0
             
             # 删除领取记录
-            placeholders = ','.join('?' * len(packet_ids))
-            cursor.execute(f"""
-                DELETE FROM red_packet_records 
-                WHERE packet_id IN ({placeholders})
-            """, packet_ids)
+            cursor.execute(
+                "DELETE FROM red_packet_records "
+                "WHERE packet_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(packet_ids),),
+            )
             
             # 删除红包
             cursor.execute("""
@@ -425,15 +427,17 @@ class SqliteRedPacketRepository:
             
             # 删除过期红包及其领取记录
             packet_ids = [p[0] for p in expired_packets]
-            placeholders = ','.join(['?'] * len(packet_ids))
-            
-            cursor.execute(f"""
-                DELETE FROM red_packet_records WHERE red_packet_id IN ({placeholders})
-            """, packet_ids)
-            
-            cursor.execute(f"""
-                DELETE FROM red_packets WHERE id IN ({placeholders})
-            """, packet_ids)
+
+            cursor.execute(
+                "DELETE FROM red_packet_records "
+                "WHERE red_packet_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(packet_ids),),
+            )
+
+            cursor.execute(
+                "DELETE FROM red_packets WHERE id IN (SELECT value FROM json_each(?))",
+                (json.dumps(packet_ids),),
+            )
             
             conn.commit()
             

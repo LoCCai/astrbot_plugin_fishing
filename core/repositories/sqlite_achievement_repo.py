@@ -1,10 +1,10 @@
 import sqlite3
-import threading
 from typing import Optional, List
 from datetime import datetime
 
 # 导入抽象基类和领域模型
 from .abstract_repository import AbstractAchievementRepository, UserAchievementProgress
+from ..database.connection_manager import DatabaseConnectionManager
 from ..domain.models import Achievement
 
 class SqliteAchievementRepository(AbstractAchievementRepository):
@@ -12,16 +12,14 @@ class SqliteAchievementRepository(AbstractAchievementRepository):
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._local = threading.local()
+        self._connection_manager = DatabaseConnectionManager(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = getattr(self._local, "connection", None)
-        if conn is None:
-            conn = sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON;")
-            self._local.connection = conn
-        return conn
+        return self._connection_manager.connection()
+
+    def close_connection(self) -> None:
+        """关闭当前线程的连接，退出后台任务时释放线程资源。"""
+        self._connection_manager.close_connection()
 
     def _row_to_achievement(self, row: sqlite3.Row) -> Optional[Achievement]:
         if not row:

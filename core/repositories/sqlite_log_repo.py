@@ -1,9 +1,9 @@
 import sqlite3
-import threading
 from typing import Any, Optional, List, Dict
 from datetime import date, datetime, timedelta, timezone
 # 导入抽象基类和领域模型
 from .abstract_repository import AbstractLogRepository
+from ..database.connection_manager import DatabaseConnectionManager
 from ..domain.models import FishingRecord, GachaRecord, WipeBombLog, TaxRecord, UserFishStat
 
 class SqliteLogRepository(AbstractLogRepository):
@@ -11,7 +11,7 @@ class SqliteLogRepository(AbstractLogRepository):
 
     def __init__(self, db_path: str, tax_record_retention_days: int = 90, tax_record_cleanup_batch_size: int = 1000):
         self.db_path = db_path
-        self._local = threading.local()
+        self._connection_manager = DatabaseConnectionManager(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
         # 定义UTC+8时区
         self.UTC8 = timezone(timedelta(hours=8))
         self.tax_record_retention_days = int(tax_record_retention_days)
@@ -23,13 +23,11 @@ class SqliteLogRepository(AbstractLogRepository):
 
     def _get_connection(self) -> sqlite3.Connection:
         """获取一个线程安全的数据库连接。"""
-        conn = getattr(self._local, "connection", None)
-        if conn is None:
-            conn = sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON;")
-            self._local.connection = conn
-        return conn
+        return self._connection_manager.connection()
+
+    def close_connection(self) -> None:
+        """关闭当前线程的连接，退出后台任务时释放线程资源。"""
+        self._connection_manager.close_connection()
 
     # --- 私有映射辅助方法 ---
     def _row_to_fishing_record(self, row: sqlite3.Row) -> Optional[FishingRecord]:
@@ -418,32 +416,21 @@ class SqliteLogRepository(AbstractLogRepository):
         tax_type: str = None,
         limit: int = 200,
     ) -> List[Dict[str, Any]]:
-        conditions = []
-        params = []
-        if user_id:
-            conditions.append("t.user_id = ?")
-            params.append(user_id)
-        if start_time:
-            conditions.append("t.timestamp >= ?")
-            params.append(start_time)
-        if end_time:
-            conditions.append("t.timestamp < ?")
-            params.append(end_time)
-        if tax_type:
-            conditions.append("t.tax_type = ?")
-            params.append(tax_type)
-
-        where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        # 筛选条件用静态 SQL + 绑定参数表达，None 即不过滤
+        params = [user_id, user_id, start_time, start_time, end_time, end_time, tax_type, tax_type]
         params.append(limit)
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT
                     t.*,
                     COALESCE(u.nickname, '') AS nickname
                 FROM taxes t
                 LEFT JOIN users u ON u.user_id = t.user_id
-                {where_sql}
+                WHERE (? IS NULL OR t.user_id = ?)
+                  AND (? IS NULL OR t.timestamp >= ?)
+                  AND (? IS NULL OR t.timestamp < ?)
+                  AND (? IS NULL OR t.tax_type = ?)
                 ORDER BY t.timestamp DESC, t.tax_id DESC
                 LIMIT ?
             """, params)
@@ -455,22 +442,11 @@ class SqliteLogRepository(AbstractLogRepository):
         end_time: datetime = None,
         user_id: str = None,
     ) -> Dict[str, Any]:
-        conditions = []
-        params = []
-        if start_time:
-            conditions.append("timestamp >= ?")
-            params.append(start_time)
-        if end_time:
-            conditions.append("timestamp < ?")
-            params.append(end_time)
-        if user_id:
-            conditions.append("user_id = ?")
-            params.append(user_id)
-        where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params = [start_time, start_time, end_time, end_time, user_id, user_id]
 
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT
                     COALESCE(SUM(tax_amount), 0) AS total_tax,
                     COUNT(*) AS record_count,
@@ -478,14 +454,18 @@ class SqliteLogRepository(AbstractLogRepository):
                     COALESCE(SUM(CASE WHEN tax_type = '每日资产税' THEN tax_amount ELSE 0 END), 0) AS daily_tax_total,
                     SUM(CASE WHEN tax_type = '每日资产税' THEN 1 ELSE 0 END) AS daily_tax_count
                 FROM taxes
-                {where_sql}
+                WHERE (? IS NULL OR timestamp >= ?)
+                  AND (? IS NULL OR timestamp < ?)
+                  AND (? IS NULL OR user_id = ?)
             """, params)
             row = cursor.fetchone()
 
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT tax_type, COALESCE(SUM(tax_amount), 0) AS total_tax, COUNT(*) AS record_count
                 FROM taxes
-                {where_sql}
+                WHERE (? IS NULL OR timestamp >= ?)
+                  AND (? IS NULL OR timestamp < ?)
+                  AND (? IS NULL OR user_id = ?)
                 GROUP BY tax_type
                 ORDER BY total_tax DESC
             """, params)

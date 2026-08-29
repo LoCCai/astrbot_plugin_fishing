@@ -1,9 +1,9 @@
 import sqlite3
-import threading
 from typing import Optional, List, Dict, Any
 
 # 导入抽象基类和领域模型
 from .abstract_repository import AbstractItemTemplateRepository
+from ..database.connection_manager import DatabaseConnectionManager
 from ..domain.models import Fish, Rod, Bait, Accessory, Title, Item
 
 class SqliteItemTemplateRepository(AbstractItemTemplateRepository):
@@ -11,16 +11,17 @@ class SqliteItemTemplateRepository(AbstractItemTemplateRepository):
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._local = threading.local()
+        # 保留历史行为：关闭 detect_types 与外键约束（模板全量重建时
+        # 需要绕开用户库存对模板行的外键引用）
+        self._connection_manager = DatabaseConnectionManager(db_path, detect_types=0, foreign_keys=False)
 
     def _get_connection(self) -> sqlite3.Connection:
         """获取一个线程安全的数据库连接。"""
-        conn = getattr(self._local, "connection", None)
-        if conn is None:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            self._local.connection = conn
-        return conn
+        return self._connection_manager.connection()
+
+    def close_connection(self) -> None:
+        """关闭当前线程的连接，退出后台任务时释放线程资源。"""
+        self._connection_manager.close_connection()
 
     # --- 私有映射辅助方法 ---
     def _row_to_fish(self, row: sqlite3.Row) -> Optional[Fish]:

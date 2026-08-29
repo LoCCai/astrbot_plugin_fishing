@@ -1,9 +1,9 @@
 import sqlite3
-import threading
 import json
 from typing import List, Optional
 from datetime import datetime
 
+from ..database.connection_manager import DatabaseConnectionManager
 from ..domain.models import UserBuff
 from .abstract_repository import AbstractUserBuffRepository
 from ..utils import get_now
@@ -14,17 +14,15 @@ DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 class SqliteUserBuffRepository(AbstractUserBuffRepository):
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._local = threading.local()
+        self._connection_manager = DatabaseConnectionManager(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
 
     def _get_connection(self) -> sqlite3.Connection:
         """获取一个线程安全的数据库连接。"""
-        conn = getattr(self._local, "connection", None)
-        if conn is None:
-            conn = sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON;")
-            self._local.connection = conn
-        return conn
+        return self._connection_manager.connection()
+
+    def close_connection(self) -> None:
+        """关闭当前线程的连接，退出后台任务时释放线程资源。"""
+        self._connection_manager.close_connection()
 
     def _to_domain(self, row: sqlite3.Row) -> UserBuff:
         # 处理 started_at 字段

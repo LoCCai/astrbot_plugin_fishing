@@ -1,9 +1,9 @@
 import sqlite3
-import threading
 from typing import Optional, List, Dict, Any
 
 # 导入抽象基类和领域模型
 from .abstract_repository import AbstractGachaRepository
+from ..database.connection_manager import DatabaseConnectionManager
 from ..domain.models import GachaPool, GachaPoolItem
 
 class SqliteGachaRepository(AbstractGachaRepository):
@@ -11,18 +11,17 @@ class SqliteGachaRepository(AbstractGachaRepository):
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._local = threading.local()
+        # 保持历史行为：关闭 detect_types，时间列按原始字符串读出。
+        # 外键约束默认开启，确保奖池删除时，其下的物品也被删除。
+        self._connection_manager = DatabaseConnectionManager(db_path, detect_types=0)
 
     def _get_connection(self) -> sqlite3.Connection:
         """获取一个线程安全的数据库连接。"""
-        conn = getattr(self._local, "connection", None)
-        if conn is None:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            # 开启外键约束，确保奖池删除时，其下的物品也被删除
-            conn.execute("PRAGMA foreign_keys = ON;")
-            self._local.connection = conn
-        return conn
+        return self._connection_manager.connection()
+
+    def close_connection(self) -> None:
+        """关闭当前线程的连接，退出后台任务时释放线程资源。"""
+        self._connection_manager.close_connection()
 
     # --- 私有映射辅助方法 ---
     def _row_to_gacha_pool(self, row: sqlite3.Row) -> Optional[GachaPool]:

@@ -10,13 +10,28 @@ from astrbot.api import logger
 class DatabaseConnectionManager:
     """数据库连接管理器，提供线程安全的连接管理和重试机制"""
     
-    def __init__(self, db_path: str, timeout: int = 30, max_retries: int = 3, retry_delay: float = 0.1):
+    def __init__(
+        self,
+        db_path: str,
+        timeout: int = 30,
+        max_retries: int = 3,
+        retry_delay: float = 0.1,
+        detect_types: int = sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+        foreign_keys: bool = True,
+        row_factory=sqlite3.Row,
+    ):
         self.db_path = db_path
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        # 各仓储建库时的类型解析/外键/行工厂约定不同（如借贷仓储刻意关闭
+        # detect_types、交易所仓储按位置解包元组），允许按实例保留原语义，
+        # 只统一 busy timeout 与 synchronous 等并发关键参数。
+        self.detect_types = detect_types
+        self.foreign_keys = foreign_keys
+        self.row_factory = row_factory
         self._local = threading.local()
-    
+
     def _get_connection(self) -> sqlite3.Connection:
         """获取一个线程安全的数据库连接"""
         conn = getattr(self._local, "connection", None)
@@ -24,16 +39,22 @@ class DatabaseConnectionManager:
             conn = self._create_connection()
             self._local.connection = conn
         return conn
-    
+
+    def connection(self) -> sqlite3.Connection:
+        """返回当前线程的连接（惰性创建），供仓储以 `with conn:` 方式复用。"""
+        return self._get_connection()
+
     def _create_connection(self) -> sqlite3.Connection:
         """创建新的数据库连接"""
         conn = sqlite3.connect(
-            self.db_path, 
-            detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+            self.db_path,
+            detect_types=self.detect_types,
             timeout=self.timeout
         )
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON;")
+        if self.row_factory is not None:
+            conn.row_factory = self.row_factory
+        if self.foreign_keys:
+            conn.execute("PRAGMA foreign_keys = ON;")
         # journal_mode 是数据库级设置，由初始化/迁移负责。连接建立时切换模式
         # 会与正在进行的写事务竞争锁，反而可能让重试尚未开始就失败。
         conn.execute("PRAGMA synchronous = NORMAL;")
