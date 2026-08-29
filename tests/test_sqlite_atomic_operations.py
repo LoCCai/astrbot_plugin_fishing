@@ -122,6 +122,7 @@ class SqliteAtomicOperationTests(_ClosesConnectionsMixin, unittest.TestCase):
                 );
                 CREATE TABLE user_aquarium (
                     user_id TEXT, fish_id INTEGER, quality_level INTEGER, quantity INTEGER,
+                    added_at DATETIME,
                     PRIMARY KEY (user_id, fish_id, quality_level)
                 );
                 CREATE TABLE user_rods (
@@ -199,7 +200,11 @@ class SqliteAtomicOperationTests(_ClosesConnectionsMixin, unittest.TestCase):
             self._create_database(db_path)
             with _sqlite(db_path) as conn:
                 conn.execute("INSERT INTO user_fish_inventory VALUES ('u1', 1, 0, 2)")
-                conn.execute("INSERT INTO user_aquarium VALUES ('u1', 1, 0, 1)")
+                conn.execute(
+                    "INSERT INTO user_aquarium "
+                    "(user_id, fish_id, quality_level, quantity) "
+                    "VALUES ('u1', 1, 0, 1)"
+                )
 
             repo = self._track(self.inventory_module.SqliteInventoryRepository(str(db_path)))
             with self.assertRaises(ValueError):
@@ -209,6 +214,56 @@ class SqliteAtomicOperationTests(_ClosesConnectionsMixin, unittest.TestCase):
                 self.assertEqual(
                     conn.execute("SELECT quantity FROM user_fish_inventory").fetchone()[0],
                     2,
+                )
+                self.assertEqual(
+                    conn.execute("SELECT quantity FROM user_aquarium").fetchone()[0],
+                    1,
+                )
+
+    def test_aquarium_writes_commit_as_complete_operations(self):
+        with self.temp_workspace() as temp_dir:
+            db_path = Path(temp_dir) / "fish.db"
+            self._create_database(db_path)
+            repo = self._track(self.inventory_module.SqliteInventoryRepository(str(db_path)))
+
+            repo.add_fish_to_aquarium("u1", 1, 3, quality_level=1)
+            repo.remove_fish_from_aquarium("u1", 1, 1, quality_level=1)
+
+            with _sqlite(db_path) as conn:
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT quantity FROM user_aquarium "
+                        "WHERE user_id = 'u1' AND fish_id = 1 AND quality_level = 1"
+                    ).fetchone()[0],
+                    2,
+                )
+
+            repo.clear_aquarium_inventory("u1", rarity=4)
+            with _sqlite(db_path) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM user_aquarium").fetchone()[0],
+                    0,
+                )
+
+    def test_smart_deduction_commits_pond_and_aquarium_together(self):
+        with self.temp_workspace() as temp_dir:
+            db_path = Path(temp_dir) / "fish.db"
+            self._create_database(db_path)
+            with _sqlite(db_path) as conn:
+                conn.execute("INSERT INTO user_fish_inventory VALUES ('u1', 1, 0, 2)")
+                conn.execute(
+                    "INSERT INTO user_aquarium "
+                    "(user_id, fish_id, quality_level, quantity) "
+                    "VALUES ('u1', 1, 0, 3)"
+                )
+
+            repo = self._track(self.inventory_module.SqliteInventoryRepository(str(db_path)))
+            repo.deduct_fish_smart("u1", 1, 4)
+
+            with _sqlite(db_path) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM user_fish_inventory").fetchone()[0],
+                    0,
                 )
                 self.assertEqual(
                     conn.execute("SELECT quantity FROM user_aquarium").fetchone()[0],
