@@ -79,10 +79,7 @@ class FishingRecordCleanupTests(unittest.TestCase):
         self.repo = self.log_module.SqliteLogRepository(str(self.db_path))
 
     def tearDown(self):
-        conn = getattr(self.repo._local, "connection", None)
-        if conn is not None:
-            conn.close()
-            delattr(self.repo._local, "connection")
+        self.repo.close_connection()
         self.temp_dir.cleanup()
 
     def _insert_record(self, user_id: str, timestamp: datetime) -> None:
