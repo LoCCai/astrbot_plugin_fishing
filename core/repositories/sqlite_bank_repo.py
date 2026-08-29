@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -758,21 +759,22 @@ class SqliteBankRepository:
     # --- 每日资产税 ---
 
     def get_daily_tax_subjects(self, threshold: int, asset_scope: str) -> List[Dict[str, Any]]:
-        include_bank = asset_scope in ("wallet_bank", "wallet_bank_fixed")
-        include_fixed = asset_scope == "wallet_bank_fixed"
-        bank_expr = "COALESCE(a.balance, 0)" if include_bank else "0"
-        fixed_expr = "COALESCE(fd.active_fixed_principal, 0)" if include_fixed else "0"
-        assessed_expr = f"(COALESCE(u.coins, 0) + {bank_expr} + {fixed_expr})"
-
+        # 计税口径由静态 CASE 表达式按绑定的 scope 参数选择，不动态拼 SQL；
+        # 未知 scope 回落为仅钱包计税，与历史行为一致。
         with self._conn_mgr.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT
                     u.*,
                     COALESCE(a.balance, 0) AS bank_balance,
                     COALESCE(a.locked_balance, 0) AS locked_balance,
                     COALESCE(fd.active_fixed_principal, 0) AS active_fixed_principal,
-                    {assessed_expr} AS assessed_assets
+                    CASE ?
+                        WHEN 'wallet_bank' THEN COALESCE(u.coins, 0) + COALESCE(a.balance, 0)
+                        WHEN 'wallet_bank_fixed' THEN COALESCE(u.coins, 0) + COALESCE(a.balance, 0)
+                            + COALESCE(fd.active_fixed_principal, 0)
+                        ELSE COALESCE(u.coins, 0)
+                    END AS assessed_assets
                 FROM users u
                 LEFT JOIN bank_accounts a ON a.user_id = u.user_id
                 LEFT JOIN (
@@ -781,8 +783,13 @@ class SqliteBankRepository:
                     WHERE status = 'active'
                     GROUP BY user_id
                 ) fd ON fd.user_id = u.user_id
-                WHERE {assessed_expr} >= ?
-            """, (threshold,))
+                WHERE CASE ?
+                    WHEN 'wallet_bank' THEN COALESCE(u.coins, 0) + COALESCE(a.balance, 0)
+                    WHEN 'wallet_bank_fixed' THEN COALESCE(u.coins, 0) + COALESCE(a.balance, 0)
+                        + COALESCE(fd.active_fixed_principal, 0)
+                    ELSE COALESCE(u.coins, 0)
+                END >= ?
+            """, (asset_scope, asset_scope, threshold))
             subjects = []
             for row in cursor.fetchall():
                 subjects.append({
@@ -912,15 +919,13 @@ class SqliteBankRepository:
             }
             for user_id in user_ids
         }
-        placeholders = ",".join(["?"] * len(user_ids))
-
         with self._conn_mgr.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT user_id, balance, locked_balance, today_withdrawn
                 FROM bank_accounts
-                WHERE user_id IN ({placeholders})
-            """, user_ids)
+                WHERE user_id IN (SELECT value FROM json_each(?))
+            """, (json.dumps(user_ids),))
             for row in cursor.fetchall():
                 summary = summaries[row["user_id"]]
                 summary["account_balance"] = row["balance"] or 0
@@ -928,16 +933,16 @@ class SqliteBankRepository:
                 summary["available_balance"] = max(summary["account_balance"] - summary["locked_balance"], 0)
                 summary["today_withdrawn"] = row["today_withdrawn"] or 0
 
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT user_id, COALESCE(SUM(amount), 0) AS pending_amount
                 FROM bank_withdraw_reservations
-                WHERE user_id IN ({placeholders}) AND status = 'pending'
+                WHERE user_id IN (SELECT value FROM json_each(?)) AND status = 'pending'
                 GROUP BY user_id
-            """, user_ids)
+            """, (json.dumps(user_ids),))
             for row in cursor.fetchall():
                 summaries[row["user_id"]]["pending_reservation_amount"] = row["pending_amount"] or 0
 
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT
                     user_id,
                     SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_fixed_count,
@@ -948,9 +953,9 @@ class SqliteBankRepository:
                     SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_fixed_count,
                     COUNT(*) AS total_fixed_count
                 FROM bank_fixed_deposits
-                WHERE user_id IN ({placeholders})
+                WHERE user_id IN (SELECT value FROM json_each(?))
                 GROUP BY user_id
-            """, user_ids)
+            """, (json.dumps(user_ids),))
             for row in cursor.fetchall():
                 summary = summaries[row["user_id"]]
                 for key in (
@@ -964,10 +969,10 @@ class SqliteBankRepository:
                     summary[key] = row[key] or 0
                 summary["next_maturity"] = row["next_maturity"]
 
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT user_id, debt_amount FROM tax_debts
-                WHERE user_id IN ({placeholders})
-            """, user_ids)
+                WHERE user_id IN (SELECT value FROM json_each(?))
+            """, (json.dumps(user_ids),))
             for row in cursor.fetchall():
                 summaries[row["user_id"]]["tax_debt"] = row["debt_amount"] or 0
 
@@ -1021,17 +1026,13 @@ class SqliteBankRepository:
     def get_fixed_deposits_for_admin(
         self, search: Optional[str] = None, limit: int = 100
     ) -> List[Dict[str, Any]]:
-        params: List[Any] = []
-        where = ""
-        if search:
-            where = "WHERE d.user_id LIKE ? OR COALESCE(u.nickname, '') LIKE ?"
-            keyword = f"%{search}%"
-            params.extend([keyword, keyword])
-        params.append(limit)
+        # search 为空时条件恒真，与原先不拼接 WHERE 子句的行为一致
+        keyword = f"%{search}%" if search else None
+        params: List[Any] = [keyword, keyword, keyword, limit]
 
         with self._conn_mgr.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT
                     d.*,
                     COALESCE(u.nickname, '') AS nickname,
@@ -1041,7 +1042,7 @@ class SqliteBankRepository:
                 FROM bank_fixed_deposits d
                 LEFT JOIN users u ON u.user_id = d.user_id
                 LEFT JOIN bank_accounts a ON a.user_id = d.user_id
-                {where}
+                WHERE (? IS NULL OR d.user_id LIKE ? OR COALESCE(u.nickname, '') LIKE ?)
                 ORDER BY
                     CASE d.status WHEN 'active' THEN 0 WHEN 'completed' THEN 1 ELSE 2 END,
                     d.matures_at ASC,
@@ -1061,21 +1062,15 @@ class SqliteBankRepository:
             return deposits
 
     def get_tax_debt_summary(self, user_id: Optional[str] = None) -> Dict[str, int]:
-        conditions = ["debt_amount > 0"]
-        params: List[Any] = []
-        if user_id:
-            conditions.append("user_id = ?")
-            params.append(user_id)
-        where_sql = "WHERE " + " AND ".join(conditions)
         with self._conn_mgr.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT
                     COALESCE(SUM(debt_amount), 0) AS total_debt,
                     COUNT(*) AS debt_user_count
                 FROM tax_debts
-                {where_sql}
-            """, params)
+                WHERE debt_amount > 0 AND (? IS NULL OR user_id = ?)
+            """, (user_id, user_id))
             row = cursor.fetchone()
             return {
                 "total_debt": row["total_debt"] or 0,
@@ -1085,16 +1080,9 @@ class SqliteBankRepository:
     def get_tax_debts_for_admin(
         self, user_id: Optional[str] = None, limit: int = 50
     ) -> List[Dict[str, Any]]:
-        conditions = ["d.debt_amount > 0"]
-        params: List[Any] = []
-        if user_id:
-            conditions.append("d.user_id = ?")
-            params.append(user_id)
-        where_sql = "WHERE " + " AND ".join(conditions)
-        params.append(limit)
         with self._conn_mgr.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT
                     d.*,
                     COALESCE(u.nickname, '') AS nickname,
@@ -1104,35 +1092,25 @@ class SqliteBankRepository:
                 FROM tax_debts d
                 LEFT JOIN users u ON u.user_id = d.user_id
                 LEFT JOIN bank_accounts a ON a.user_id = d.user_id
-                {where_sql}
+                WHERE d.debt_amount > 0 AND (? IS NULL OR d.user_id = ?)
                 ORDER BY d.debt_amount DESC, d.updated_at DESC
                 LIMIT ?
-            """, params)
+            """, (user_id, user_id, limit))
             return [dict(row) for row in cursor.fetchall()]
 
     def get_transactions(
         self, user_id: Optional[str] = None, tx_type: Optional[str] = None, limit: int = 100
     ) -> List[Dict[str, Any]]:
-        conditions = []
-        params: List[Any] = []
-        if user_id:
-            conditions.append("t.user_id = ?")
-            params.append(user_id)
-        if tx_type:
-            conditions.append("t.tx_type = ?")
-            params.append(tx_type)
-        where_sql = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-        params.append(limit)
         with self._conn_mgr.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT t.*, COALESCE(u.nickname, '') AS nickname
                 FROM bank_transactions t
                 LEFT JOIN users u ON u.user_id = t.user_id
-                {where_sql}
+                WHERE (? IS NULL OR t.user_id = ?) AND (? IS NULL OR t.tx_type = ?)
                 ORDER BY t.created_at DESC, t.transaction_id DESC
                 LIMIT ?
-            """, params)
+            """, (user_id, user_id, tx_type, tx_type, limit))
             records = []
             for row in cursor.fetchall():
                 data = dict(row)

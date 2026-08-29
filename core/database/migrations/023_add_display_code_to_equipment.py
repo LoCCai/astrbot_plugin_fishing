@@ -14,11 +14,10 @@ def _to_base36(n: int) -> str:
     return "".join(reversed(out))
 
 
-def _ensure_column(cursor: sqlite3.Cursor, table: str, column: str, ddl: str):
-    cursor.execute(f"PRAGMA table_info({table})")
-    cols = [row[1] for row in cursor.fetchall()]
-    if column not in cols:
-        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+def _column_exists(cursor: sqlite3.Cursor, table: str, column: str) -> bool:
+    # PRAGMA 不支持绑定参数，改用 pragma_table_info 表值函数
+    cols = [row[0] for row in cursor.execute("SELECT name FROM pragma_table_info(?)", (table,))]
+    return column in cols
 
 
 def up(cursor: sqlite3.Cursor):
@@ -32,8 +31,10 @@ def up(cursor: sqlite3.Cursor):
     logger.info("执行 023_add_display_code_to_equipment: 添加 display_code 并回填...")
 
     # 1) 添加列
-    _ensure_column(cursor, "user_rods", "display_code", "display_code TEXT")
-    _ensure_column(cursor, "user_accessories", "display_code", "display_code TEXT")
+    if not _column_exists(cursor, "user_rods", "display_code"):
+        cursor.execute("ALTER TABLE user_rods ADD COLUMN display_code TEXT")
+    if not _column_exists(cursor, "user_accessories", "display_code"):
+        cursor.execute("ALTER TABLE user_accessories ADD COLUMN display_code TEXT")
 
     # 2) 为历史数据回填
     # user_rods

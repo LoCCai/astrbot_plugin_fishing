@@ -379,12 +379,21 @@ def expire_stale_reservations(
     不到税，只会不断累积欠税。
     """
     stamp = _now(now)
-    params: list = []
-    condition = "status = 'pending' AND expires_at IS NOT NULL"
     if user_id:
-        condition += " AND user_id = ?"
-        params.append(user_id)
-    cursor.execute(f"SELECT * FROM bank_withdraw_reservations WHERE {condition}", params)
+        cursor.execute(
+            """
+            SELECT * FROM bank_withdraw_reservations
+            WHERE status = 'pending' AND expires_at IS NOT NULL AND user_id = ?
+            """,
+            (user_id,),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT * FROM bank_withdraw_reservations
+            WHERE status = 'pending' AND expires_at IS NOT NULL
+            """
+        )
 
     expired = 0
     for row in cursor.fetchall():

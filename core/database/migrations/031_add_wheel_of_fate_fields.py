@@ -12,25 +12,25 @@ def up(cursor: sqlite3.Cursor):
         cursor.execute("PRAGMA table_info(users)")
         columns = [info[1] for info in cursor.fetchall()]
 
-        # 定义所有需要添加的字段及其类型
-        fields_to_add = [
-            ('in_wheel_of_fate', 'BOOLEAN'),
-            ('wof_current_level', 'INTEGER'),
-            ('wof_current_prize', 'INTEGER'),
-            ('wof_entry_fee', 'INTEGER'),
-            ('last_wof_play_time', 'DATETIME'),
-            ('wof_last_action_time', 'DATETIME')
-        ]
-
-        # 循环检查并添加每一个缺失的字段
-        for field_name, field_type in fields_to_add:
-            if field_name not in columns:
-                cursor.execute(f"""
-                    ALTER TABLE users ADD COLUMN {field_name} {field_type}
-                """)
-                logger.info(f"成功为 users 表添加 '{field_name}' 字段。")
-            else:
-                logger.info(f"'{field_name}' 字段已存在于 users 表中，无需添加。")
+        # 逐一检查并添加每一个缺失的字段（列名均为脚本内固定值）
+        if "in_wheel_of_fate" not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN in_wheel_of_fate BOOLEAN")
+            logger.info("成功为 users 表添加 'in_wheel_of_fate' 字段。")
+        if "wof_current_level" not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN wof_current_level INTEGER")
+            logger.info("成功为 users 表添加 'wof_current_level' 字段。")
+        if "wof_current_prize" not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN wof_current_prize INTEGER")
+            logger.info("成功为 users 表添加 'wof_current_prize' 字段。")
+        if "wof_entry_fee" not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN wof_entry_fee INTEGER")
+            logger.info("成功为 users 表添加 'wof_entry_fee' 字段。")
+        if "last_wof_play_time" not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN last_wof_play_time DATETIME")
+            logger.info("成功为 users 表添加 'last_wof_play_time' 字段。")
+        if "wof_last_action_time" not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN wof_last_action_time DATETIME")
+            logger.info("成功为 users 表添加 'wof_last_action_time' 字段。")
 
     except sqlite3.Error as e:
         logger.error(f"在迁移 031_add_wheel_of_fate_fields 期间发生错误: {e}")

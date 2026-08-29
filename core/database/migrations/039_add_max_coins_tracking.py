@@ -44,20 +44,10 @@ def down(cursor):
         columns = [row[1] for row in cursor.fetchall()]
         
         if "max_coins" in columns:
-            # 获取除 max_coins 外的所有列
-            columns.remove("max_coins")
-            columns_str = ", ".join(columns)
-            
-            # 重建表（不包含 max_coins）
-            cursor.execute(f"""
-                CREATE TABLE users_backup AS 
-                SELECT {columns_str}
-                FROM users
-            """)
-            
-            cursor.execute("DROP TABLE users")
-            cursor.execute("ALTER TABLE users_backup RENAME TO users")
-            
+            # SQLite ≥ 3.35 支持直接 DROP COLUMN（重建表会丢失约束，
+            # 且 down 流程不被迁移框架调用，仅作维护用途）
+            cursor.execute("ALTER TABLE users DROP COLUMN max_coins")
+
             logger.info("[迁移039-回滚] max_coins 字段移除成功")
         else:
             logger.info("[迁移039-回滚] max_coins 字段不存在，无需回滚")

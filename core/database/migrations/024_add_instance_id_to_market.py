@@ -1,11 +1,10 @@
 import sqlite3
 
 
-def _ensure_column(cursor: sqlite3.Cursor, table: str, column: str, ddl: str):
-    cursor.execute(f"PRAGMA table_info({table})")
-    cols = [row[1] for row in cursor.fetchall()]
-    if column not in cols:
-        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+def _column_exists(cursor: sqlite3.Cursor, table: str, column: str) -> bool:
+    # PRAGMA 不支持绑定参数，改用 pragma_table_info 表值函数
+    cols = [row[0] for row in cursor.execute("SELECT name FROM pragma_table_info(?)", (table,))]
+    return column in cols
 
 
 def up(cursor: sqlite3.Cursor):
@@ -13,7 +12,8 @@ def up(cursor: sqlite3.Cursor):
     为 market 表添加 item_instance_id 字段，用于存储实例ID以便显示短码
     """
     # 添加 item_instance_id 字段
-    _ensure_column(cursor, "market", "item_instance_id", "INTEGER")
+    if not _column_exists(cursor, "market", "item_instance_id"):
+        cursor.execute("ALTER TABLE market ADD COLUMN item_instance_id INTEGER")
     
     # 检查字段是否成功添加，如果添加成功则设置默认值
     cursor.execute("PRAGMA table_info(market)")

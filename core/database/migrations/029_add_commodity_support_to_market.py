@@ -41,49 +41,20 @@ def up(cursor: sqlite3.Cursor):
         )
     """)
     
-    # 2. 检查现有表结构并复制数据
-    cursor.execute("PRAGMA table_info(market)")
-    existing_columns = [col[1] for col in cursor.fetchall()]
-    logger.info(f"现有表字段: {existing_columns}")
-    
-    # 构建动态的INSERT语句
-    base_columns = ['market_id', 'user_id', 'item_type', 'item_id', 'quantity', 'price', 'listed_at', 'expires_at']
-    new_columns = ['refine_level', 'seller_nickname', 'item_name', 'item_description', 'item_instance_id', 'is_anonymous']
-    
-    # 选择存在的字段
-    select_fields = []
-    for col in base_columns:
-        if col in existing_columns:
-            select_fields.append(col)
-        else:
-            select_fields.append(f"NULL as {col}")
-    
-    for col in new_columns:
-        if col in existing_columns:
-            if col == 'is_anonymous':
-                # 处理可能的 BOOLEAN 字段名问题
-                if 'BOOLEAN' in existing_columns and 'is_anonymous' not in existing_columns:
-                    select_fields.append("BOOLEAN as is_anonymous")
-                else:
-                    select_fields.append(f"COALESCE({col}, 0) as {col}")
-            else:
-                select_fields.append(f"COALESCE({col}, {get_default_value(col)}) as {col}")
-        else:
-            if col == 'is_anonymous':
-                select_fields.append("0 as is_anonymous")
-            else:
-                select_fields.append(f"{get_default_value(col)} as {col}")
-    
-    select_sql = f"SELECT {', '.join(select_fields)} FROM market"
-    logger.info(f"复制数据SQL: {select_sql}")
-    
-    cursor.execute(f"""
+    # 2. 复制数据。执行到此处时 market 已含 026 及之前引入的全部列
+    #    （item_instance_id、is_anonymous 已存在），直接按列名复制。
+    cursor.execute("""
         INSERT INTO market_new (
-            market_id, user_id, item_type, item_id, quantity, price, 
-            listed_at, expires_at, refine_level, seller_nickname, 
+            market_id, user_id, item_type, item_id, quantity, price,
+            listed_at, expires_at, refine_level, seller_nickname,
             item_name, item_description, item_instance_id, is_anonymous
         )
-        {select_sql}
+        SELECT market_id, user_id, item_type, item_id, quantity, price,
+               listed_at, expires_at, COALESCE(refine_level, 1),
+               COALESCE(seller_nickname, ''), COALESCE(item_name, ''),
+               COALESCE(item_description, ''), item_instance_id,
+               COALESCE(is_anonymous, 0)
+        FROM market
     """)
     
     # 3. 删除旧表
@@ -129,49 +100,20 @@ def down(cursor: sqlite3.Cursor):
         )
     """)
     
-    # 2. 检查现有表结构并复制rod、accessory、item和fish类型的数据
-    cursor.execute("PRAGMA table_info(market)")
-    existing_columns = [col[1] for col in cursor.fetchall()]
-    logger.info(f"现有表字段: {existing_columns}")
-    
-    # 构建动态的INSERT语句
-    base_columns = ['market_id', 'user_id', 'item_type', 'item_id', 'quantity', 'price', 'listed_at', 'expires_at']
-    new_columns = ['refine_level', 'seller_nickname', 'item_name', 'item_description', 'item_instance_id', 'is_anonymous']
-    
-    # 选择存在的字段
-    select_fields = []
-    for col in base_columns:
-        if col in existing_columns:
-            select_fields.append(col)
-        else:
-            select_fields.append(f"NULL as {col}")
-    
-    for col in new_columns:
-        if col in existing_columns:
-            if col == 'is_anonymous':
-                # 处理可能的 BOOLEAN 字段名问题
-                if 'BOOLEAN' in existing_columns and 'is_anonymous' not in existing_columns:
-                    select_fields.append("BOOLEAN as is_anonymous")
-                else:
-                    select_fields.append(f"COALESCE({col}, 0) as {col}")
-            else:
-                select_fields.append(f"COALESCE({col}, {get_default_value(col)}) as {col}")
-        else:
-            if col == 'is_anonymous':
-                select_fields.append("0 as is_anonymous")
-            else:
-                select_fields.append(f"{get_default_value(col)} as {col}")
-    
-    select_sql = f"SELECT {', '.join(select_fields)} FROM market WHERE item_type IN ('rod', 'accessory', 'item', 'fish')"
-    logger.info(f"复制数据SQL: {select_sql}")
-    
-    cursor.execute(f"""
+    # 2. 复制 rod、accessory、item 和 fish 类型的数据（此时 market 已含全部列）
+    cursor.execute("""
         INSERT INTO market_rollback (
-            market_id, user_id, item_type, item_id, quantity, price, 
-            listed_at, expires_at, refine_level, seller_nickname, 
+            market_id, user_id, item_type, item_id, quantity, price,
+            listed_at, expires_at, refine_level, seller_nickname,
             item_name, item_description, item_instance_id, is_anonymous
         )
-        {select_sql}
+        SELECT market_id, user_id, item_type, item_id, quantity, price,
+               listed_at, expires_at, COALESCE(refine_level, 1),
+               COALESCE(seller_nickname, ''), COALESCE(item_name, ''),
+               COALESCE(item_description, ''), item_instance_id,
+               COALESCE(is_anonymous, 0)
+        FROM market
+        WHERE item_type IN ('rod', 'accessory', 'item', 'fish')
     """)
     
     # 3. 删除当前表

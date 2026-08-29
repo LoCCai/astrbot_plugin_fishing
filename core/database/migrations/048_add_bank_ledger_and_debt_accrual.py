@@ -6,8 +6,9 @@ import sqlite3
 
 
 def _column_exists(cursor: sqlite3.Cursor, table_name: str, column_name: str) -> bool:
-    cursor.execute(f"PRAGMA table_info({table_name})")
-    return any(row[1] == column_name for row in cursor.fetchall())
+    # PRAGMA 不支持绑定参数，改用 pragma_table_info 表值函数
+    cols = [row[0] for row in cursor.execute("SELECT name FROM pragma_table_info(?)", (table_name,))]
+    return column_name in cols
 
 
 def up(cursor: sqlite3.Cursor):

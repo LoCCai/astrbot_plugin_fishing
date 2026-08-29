@@ -31,15 +31,13 @@ def down(cursor: sqlite3.Cursor):
             return
 
         # Proceed with the downgrade
-        cols_to_keep = ",".join([f'"{c}"' for c in columns if c != 'wipe_bomb_forecast'])
-        
+        # SQLite ≥ 3.35 支持直接 DROP COLUMN（原重建表方式会丢失表约束，
+        # 且 down 流程不被迁移框架调用，仅作维护用途）
         cursor.execute("PRAGMA foreign_keys=off;")
         cursor.execute("BEGIN TRANSACTION;")
-        
-        cursor.execute(f"CREATE TABLE users_new AS SELECT {cols_to_keep} FROM users;")
-        cursor.execute("DROP TABLE users;")
-        cursor.execute("ALTER TABLE users_new RENAME TO users;")
-        
+
+        cursor.execute("ALTER TABLE users DROP COLUMN wipe_bomb_forecast")
+
         cursor.execute("COMMIT;")
         cursor.execute("PRAGMA foreign_keys=on;")
         

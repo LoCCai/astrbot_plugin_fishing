@@ -8,22 +8,36 @@ def up(cursor: sqlite3.Cursor):
     logger.info("正在执行 003_refactor_baits_table_with_data_migration: 重构 baits 表...")
 
     # 1. 安全地添加新列
-    columns_to_add = {
-        "success_rate_modifier": "REAL DEFAULT 0.0",
-        "rare_chance_modifier": "REAL DEFAULT 0.0",
-        "garbage_reduction_modifier": "REAL DEFAULT 0.0",
-        "value_modifier": "REAL DEFAULT 1.0",
-        "quantity_modifier": "REAL DEFAULT 1.0",
-        "is_consumable": "INTEGER DEFAULT 1"
-    }
-    for col, col_type in columns_to_add.items():
-        try:
-            cursor.execute(f"ALTER TABLE baits ADD COLUMN {col} {col_type}")
-        except sqlite3.OperationalError as e:
-            if "duplicate column name" in str(e):
-                logger.debug(f"列 '{col}' 已存在，跳过添加。")
-            else:
-                raise e
+    try:
+        cursor.execute("ALTER TABLE baits ADD COLUMN success_rate_modifier REAL DEFAULT 0.0")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise e
+    try:
+        cursor.execute("ALTER TABLE baits ADD COLUMN rare_chance_modifier REAL DEFAULT 0.0")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise e
+    try:
+        cursor.execute("ALTER TABLE baits ADD COLUMN garbage_reduction_modifier REAL DEFAULT 0.0")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise e
+    try:
+        cursor.execute("ALTER TABLE baits ADD COLUMN value_modifier REAL DEFAULT 1.0")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise e
+    try:
+        cursor.execute("ALTER TABLE baits ADD COLUMN quantity_modifier REAL DEFAULT 1.0")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise e
+    try:
+        cursor.execute("ALTER TABLE baits ADD COLUMN is_consumable INTEGER DEFAULT 1")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise e
 
     # 2. 读取所有现有的鱼饵描述
     cursor.execute("SELECT bait_id, effect_description FROM baits")
@@ -70,13 +84,29 @@ def up(cursor: sqlite3.Cursor):
         if "无消耗" in desc_lower:
             updates["is_consumable"] = 0
 
-        # 如果有需要更新的字段，则执行UPDATE
+        # 如果有需要更新的字段，则执行UPDATE（未命中的列用 COALESCE 保持原值）
         if updates:
-            set_clauses = ", ".join([f"{key} = ?" for key in updates.keys()])
-            params = list(updates.values())
-            params.append(bait_id)
-
-            cursor.execute(f"UPDATE baits SET {set_clauses} WHERE bait_id = ?", tuple(params))
+            cursor.execute(
+                """
+                UPDATE baits
+                SET success_rate_modifier = COALESCE(?, success_rate_modifier),
+                    rare_chance_modifier = COALESCE(?, rare_chance_modifier),
+                    garbage_reduction_modifier = COALESCE(?, garbage_reduction_modifier),
+                    value_modifier = COALESCE(?, value_modifier),
+                    quantity_modifier = COALESCE(?, quantity_modifier),
+                    is_consumable = COALESCE(?, is_consumable)
+                WHERE bait_id = ?
+                """,
+                (
+                    updates.get("success_rate_modifier"),
+                    updates.get("rare_chance_modifier"),
+                    updates.get("garbage_reduction_modifier"),
+                    updates.get("value_modifier"),
+                    updates.get("quantity_modifier"),
+                    updates.get("is_consumable"),
+                    bait_id,
+                ),
+            )
 
     logger.info("已根据 effect_description 成功迁移数据到新列。")
 

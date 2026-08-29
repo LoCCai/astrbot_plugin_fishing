@@ -39,39 +39,18 @@ def up(cursor: sqlite3.Cursor):
         )
     """)
     
-    # 2. 检查现有表结构并复制数据
-    cursor.execute("PRAGMA table_info(market)")
-    existing_columns = [col[1] for col in cursor.fetchall()]
-    logger.info(f"现有表字段: {existing_columns}")
-    
-    # 构建动态的INSERT语句
-    base_columns = ['market_id', 'user_id', 'item_type', 'item_id', 'quantity', 'price', 'listed_at', 'expires_at']
-    new_columns = ['refine_level', 'seller_nickname', 'item_name', 'item_description']
-    
-    # 选择存在的字段
-    select_fields = []
-    for col in base_columns:
-        if col in existing_columns:
-            select_fields.append(col)
-        else:
-            select_fields.append(f"NULL as {col}")
-    
-    for col in new_columns:
-        if col in existing_columns:
-            select_fields.append(f"COALESCE({col}, {get_default_value(col)}) as {col}")
-        else:
-            select_fields.append(f"{get_default_value(col)} as {col}")
-    
-    select_sql = f"SELECT {', '.join(select_fields)} FROM market"
-    logger.info(f"复制数据SQL: {select_sql}")
-    
-    cursor.execute(f"""
+    # 2. 复制数据。迁移按版本严格顺序执行，执行到此处时 market 表必然是
+    #    001 建立的 8 列结构，refine_level 等列在本迁移中才引入，
+    #    直接用字面量默认值补齐，不按运行时表结构动态拼 SQL。
+    cursor.execute("""
         INSERT INTO market_new (
-            market_id, user_id, item_type, item_id, quantity, price, 
-            listed_at, expires_at, refine_level, seller_nickname, 
+            market_id, user_id, item_type, item_id, quantity, price,
+            listed_at, expires_at, refine_level, seller_nickname,
             item_name, item_description
         )
-        {select_sql}
+        SELECT market_id, user_id, item_type, item_id, quantity, price,
+               listed_at, expires_at, 1, '', '', ''
+        FROM market
     """)
     
     # 3. 删除旧表
@@ -114,39 +93,19 @@ def down(cursor: sqlite3.Cursor):
         )
     """)
     
-    # 2. 检查现有表结构并复制rod和accessory类型的数据
-    cursor.execute("PRAGMA table_info(market)")
-    existing_columns = [col[1] for col in cursor.fetchall()]
-    logger.info(f"现有表字段: {existing_columns}")
-    
-    # 构建动态的INSERT语句
-    base_columns = ['market_id', 'user_id', 'item_type', 'item_id', 'quantity', 'price', 'listed_at', 'expires_at']
-    new_columns = ['refine_level', 'seller_nickname', 'item_name', 'item_description']
-    
-    # 选择存在的字段
-    select_fields = []
-    for col in base_columns:
-        if col in existing_columns:
-            select_fields.append(col)
-        else:
-            select_fields.append(f"NULL as {col}")
-    
-    for col in new_columns:
-        if col in existing_columns:
-            select_fields.append(f"COALESCE({col}, {get_default_value(col)}) as {col}")
-        else:
-            select_fields.append(f"{get_default_value(col)} as {col}")
-    
-    select_sql = f"SELECT {', '.join(select_fields)} FROM market WHERE item_type IN ('rod', 'accessory')"
-    logger.info(f"复制数据SQL: {select_sql}")
-    
-    cursor.execute(f"""
+    # 2. 复制 rod 和 accessory 类型的数据（此时 market 已含本迁移引入的全部列）
+    cursor.execute("""
         INSERT INTO market_rollback (
-            market_id, user_id, item_type, item_id, quantity, price, 
-            listed_at, expires_at, refine_level, seller_nickname, 
+            market_id, user_id, item_type, item_id, quantity, price,
+            listed_at, expires_at, refine_level, seller_nickname,
             item_name, item_description
         )
-        {select_sql}
+        SELECT market_id, user_id, item_type, item_id, quantity, price,
+               listed_at, expires_at, COALESCE(refine_level, 1),
+               COALESCE(seller_nickname, ''), COALESCE(item_name, ''),
+               COALESCE(item_description, '')
+        FROM market
+        WHERE item_type IN ('rod', 'accessory')
     """)
     
     # 3. 删除当前表

@@ -7,6 +7,7 @@ import json
 import os
 import random
 import secrets
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -194,7 +195,12 @@ class SlotService:
     def _state_file_path(self) -> Optional[str]:
         if not self._data_dir:
             return None
-        return os.path.join(self._data_dir, "slot_state.json")
+        # 规范化并校验路径不越出数据目录（文件名为固定常量）
+        base = os.path.normpath(self._data_dir)
+        resolved = os.path.normpath(os.path.join(base, "slot_state.json"))
+        if not resolved.startswith(base + os.sep):
+            return None
+        return resolved
 
     def _load_state(self):
         """从文件恢复 daily_usage / jackpot_pool / lose_streak"""
@@ -226,14 +232,24 @@ class SlotService:
                 "jackpot_pool": self.jackpot_pool,
                 "lose_streak": self._lose_streak,
             }
-            tmp_path = path + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-            # 原子替换，防止写入中途崩溃导致数据损坏
-            if os.path.exists(path):
-                os.replace(tmp_path, path)
-            else:
-                os.rename(tmp_path, path)
+            # mkstemp 在数据目录内生成固定目录+随机文件名的临时文件（无路径拼接），
+            # 写完后原子替换，防止写入中途崩溃导致数据损坏
+            fd, tmp_path = tempfile.mkstemp(
+                dir=os.path.dirname(path), prefix="slot_state_", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False)
+                if os.path.exists(path):
+                    os.replace(tmp_path, path)
+                else:
+                    os.rename(tmp_path, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             logger.warning(f"🎰 拉杆机状态保存失败: {e}")
 
