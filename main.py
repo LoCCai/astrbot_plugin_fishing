@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import tempfile
 
 from astrbot.api import logger, AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter, MessageChain
@@ -411,6 +412,9 @@ class FishingPlugin(Star):
         # 启动红包清理任务
         self._red_packet_cleanup_task = asyncio.create_task(self._red_packet_cleanup_scheduler())
 
+        # 启动钓鱼记录过期清理任务（原为每钓事务内联清理，现为每小时一次）
+        self._fishing_records_cleanup_task = asyncio.create_task(self._fishing_records_cleanup_scheduler())
+
         # --- 5. 初始化核心游戏数据 ---
         data_setup_service = DataSetupService(
             self.item_template_repo, self.gacha_repo, self.shop_repo, self.user_repo
@@ -440,10 +444,18 @@ class FishingPlugin(Star):
         self.impersonation_map = {}
 
         # --- 游戏模块开关（per-group 持久化） ---
-        self._game_toggles_path = os.path.join(self.data_dir, "game_toggles.json")
+        self._game_toggles_path = self._resolve_data_file("game_toggles.json")
         self.game_toggles: dict = self._load_game_toggles()
 
     # =========== 游戏模块开关 ==========
+
+    def _resolve_data_file(self, filename: str) -> str:
+        """解析数据目录内的固定文件名，规范化并校验不越出数据目录。"""
+        base = os.path.normpath(self.data_dir)
+        resolved = os.path.normpath(os.path.join(base, filename))
+        if not resolved.startswith(base + os.sep):
+            raise ValueError("数据文件路径越出数据目录")
+        return resolved
 
     def _load_game_toggles(self) -> dict:
         """从JSON文件加载游戏模块开关配置"""
@@ -458,8 +470,20 @@ class FishingPlugin(Star):
     def _save_game_toggles(self):
         """保存游戏模块开关配置到JSON文件"""
         try:
-            with open(self._game_toggles_path, "w", encoding="utf-8") as f:
-                json.dump(self.game_toggles, f, ensure_ascii=False, indent=2)
+            # mkstemp 在数据目录内生成安全临时文件，写完后原子替换
+            fd, tmp_path = tempfile.mkstemp(
+                dir=self.data_dir, prefix="game_toggles_", suffix=".json.tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(self.game_toggles, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, self._game_toggles_path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             logger.error(f"保存游戏开关配置失败: {e}")
 
@@ -687,6 +711,20 @@ class FishingPlugin(Star):
                 break
             except Exception as e:
                 logger.error(f"红包清理任务出错: {e}")
+
+    async def _fishing_records_cleanup_scheduler(self):
+        """钓鱼记录过期清理调度器 - 每小时清理一次超过保留期的钓鱼记录"""
+        while True:
+            try:
+                await asyncio.sleep(3600)  # 每小时执行一次
+                removed_count = self.inventory_repo.cleanup_old_fishing_records(days=30)
+                if removed_count > 0:
+                    logger.info(f"定时清理了 {removed_count} 条过期钓鱼记录")
+            except asyncio.CancelledError:
+                logger.info("钓鱼记录清理任务已取消")
+                break
+            except Exception as e:
+                logger.error(f"钓鱼记录清理任务出错: {e}")
 
     def _get_effective_user_id(self, event: AstrMessageEvent):
         """获取在当前上下文中应当作为指令执行者的用户ID。
@@ -1787,7 +1825,11 @@ class FishingPlugin(Star):
         # 取消红包清理任务
         if hasattr(self, '_red_packet_cleanup_task') and self._red_packet_cleanup_task:
             self._red_packet_cleanup_task.cancel()
-            
+
+        # 取消钓鱼记录清理任务
+        if hasattr(self, '_fishing_records_cleanup_task') and self._fishing_records_cleanup_task:
+            self._fishing_records_cleanup_task.cancel()
+
         if self.web_admin_task:
             self.web_admin_task.cancel()
         for repo in (self.loan_repo, self.user_repo, self.inventory_repo, self.bank_repo):

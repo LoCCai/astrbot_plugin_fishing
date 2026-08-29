@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import threading
 from typing import Optional, List, Dict, Any, Set
@@ -9,6 +10,7 @@ from astrbot.api import logger
 from .abstract_repository import AbstractInventoryRepository
 from ..domain.models import UserFishInventoryItem, UserAquariumItem, UserRodInstance, UserAccessoryInstance, FishingZone, AquariumUpgrade
 from ..database.connection_manager import DatabaseConnectionManager
+from ..utils import get_now
 
 
 class InsufficientFishQuantityError(Exception):
@@ -142,29 +144,27 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
         keep_one: bool = False,
     ) -> Dict[str, Any]:
         """在一个事务内统计并删除鱼，同时原子增加用户金币。"""
+        # 稀有度过滤与"留一条"都用绑定参数选择，避免动态拼 SQL
         rarity_values = sorted(set(rarities or []))
-        rarity_clause = ""
-        params: List[Any] = [user_id]
-        if rarity_values:
-            placeholders = ", ".join("?" for _ in rarity_values)
-            rarity_clause = f" AND f.rarity IN ({placeholders})"
-            params.extend(rarity_values)
+        rarity_json = json.dumps(rarity_values) if rarity_values else None
+        keep_flag = 1 if keep_one else 0
 
         with self._connection_manager.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("BEGIN IMMEDIATE")
             try:
-                quantity_expr = "MAX(ufi.quantity - 1, 0)" if keep_one else "ufi.quantity"
-                cursor.execute(f"""
+                cursor.execute("""
                     SELECT f.rarity, ufi.quality_level,
-                           SUM({quantity_expr}) AS quantity,
-                           SUM({quantity_expr} * f.base_value * (1 + ufi.quality_level)) AS value
+                           SUM(CASE ? WHEN 1 THEN MAX(ufi.quantity - 1, 0) ELSE ufi.quantity END) AS quantity,
+                           SUM(CASE ? WHEN 1 THEN MAX(ufi.quantity - 1, 0) ELSE ufi.quantity END
+                               * f.base_value * (1 + ufi.quality_level)) AS value
                     FROM user_fish_inventory ufi
                     JOIN fish f ON ufi.fish_id = f.fish_id
-                    WHERE ufi.user_id = ?{rarity_clause}
+                    WHERE ufi.user_id = ?
+                      AND (? IS NULL OR f.rarity IN (SELECT value FROM json_each(?)))
                     GROUP BY f.rarity, ufi.quality_level
                     HAVING quantity > 0
-                """, tuple(params))
+                """, (keep_flag, keep_flag, user_id, rarity_json, rarity_json))
                 rows = [dict(row) for row in cursor.fetchall()]
                 total_value = sum(int(row["value"] or 0) for row in rows)
 
@@ -172,26 +172,30 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
                     conn.rollback()
                     return {"total_value": 0, "details": []}
 
-                mutation_params: List[Any] = [user_id]
-                mutation_filter = ""
-                if rarity_values:
-                    placeholders = ", ".join("?" for _ in rarity_values)
-                    mutation_filter = (
-                        " AND fish_id IN "
-                        f"(SELECT fish_id FROM fish WHERE rarity IN ({placeholders}))"
-                    )
-                    mutation_params.extend(rarity_values)
-
                 if keep_one:
                     cursor.execute(
-                        f"UPDATE user_fish_inventory SET quantity = 1 "
-                        f"WHERE user_id = ? AND quantity > 1{mutation_filter}",
-                        tuple(mutation_params),
+                        """
+                        UPDATE user_fish_inventory
+                        SET quantity = 1
+                        WHERE user_id = ? AND quantity > 1
+                          AND fish_id IN (
+                              SELECT fish_id FROM fish
+                              WHERE (? IS NULL OR rarity IN (SELECT value FROM json_each(?)))
+                          )
+                        """,
+                        (user_id, rarity_json, rarity_json),
                     )
                 else:
                     cursor.execute(
-                        f"DELETE FROM user_fish_inventory WHERE user_id = ?{mutation_filter}",
-                        tuple(mutation_params),
+                        """
+                        DELETE FROM user_fish_inventory
+                        WHERE user_id = ?
+                          AND fish_id IN (
+                              SELECT fish_id FROM fish
+                              WHERE (? IS NULL OR rarity IN (SELECT value FROM json_each(?)))
+                          )
+                        """,
+                        (user_id, rarity_json, rarity_json),
                     )
 
                 cursor.execute(
@@ -478,15 +482,25 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
                     """,
                     (user_id, user_id),
                 )
-                cursor.execute(
-                    "DELETE FROM fishing_records WHERE timestamp < ?",
-                    (timestamp - timedelta(days=30),),
-                )
                 conn.commit()
                 return True
             except Exception:
                 conn.rollback()
                 raise
+
+    def cleanup_old_fishing_records(self, days: int = 30) -> int:
+        """删除超过保留期的钓鱼记录，返回删除的行数。
+
+        全量过期清理原本内联在每钓写事务中，随表增长会拉长全局写锁的
+        持有时间；改为由低频后台任务调用，命中 idx_fishing_records_timestamp。
+        """
+        cutoff = get_now() - timedelta(days=days)
+
+        def _op(cursor: sqlite3.Cursor) -> int:
+            cursor.execute("DELETE FROM fishing_records WHERE timestamp < ?", (cutoff,))
+            return cursor.rowcount
+
+        return self._connection_manager.run_in_transaction(_op)
 
     def get_user_equipped_rod(self, user_id: str) -> Optional[UserRodInstance]:
         """获取用户当前装备的钓竿实例"""
