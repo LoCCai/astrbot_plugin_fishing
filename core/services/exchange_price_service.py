@@ -320,6 +320,18 @@ class ExchangePriceService:
 
     def _daily_price_update_loop(self):
         """每日价格更新循环"""
+        try:
+            self._run_daily_price_update_loop()
+        finally:
+            close = getattr(self.exchange_repo, "close_connection", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as e:
+                    logger.warning(f"关闭交易所价格线程数据库连接失败: {e}")
+
+    def _run_daily_price_update_loop(self):
+        """运行价格更新循环；连接释放由线程入口统一保证。"""
         # 启动时立即检查是否需要更新价格
         logger.info("价格更新线程启动，检查当前价格状态...")
         try:

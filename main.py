@@ -1801,6 +1801,26 @@ class FishingPlugin(Star):
             
         if self.web_admin_task:
             self.web_admin_task.cancel()
-        for repo in (self.loan_repo, self.user_repo, self.inventory_repo, self.bank_repo):
-            repo.close_connection()
+        for repo_name in (
+            "user_repo",
+            "item_template_repo",
+            "inventory_repo",
+            "gacha_repo",
+            "market_repo",
+            "shop_repo",
+            "log_repo",
+            "achievement_repo",
+            "buff_repo",
+            "exchange_repo",
+            "bank_repo",
+            "red_packet_repo",
+            "loan_repo",
+        ):
+            repo = getattr(self, repo_name, None)
+            close = getattr(repo, "close_connection", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as e:
+                    logger.warning(f"关闭仓储 {repo_name} 的数据库连接失败: {e}")
         logger.info("钓鱼插件已成功终止。")
