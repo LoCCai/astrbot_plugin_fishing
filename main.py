@@ -408,7 +408,7 @@ class FishingPlugin(Star):
         self.achievement_service.start_achievement_check_task()
         self.exchange_service.start_daily_price_update_task() # 启动交易所后台任务
         
-        # 启动红包清理任务
+        # 启动低频数据库维护任务
         self._red_packet_cleanup_task = asyncio.create_task(self._red_packet_cleanup_scheduler())
 
         # --- 5. 初始化核心游戏数据 ---
@@ -675,18 +675,29 @@ class FishingPlugin(Star):
             logger.error(f"发送21点公告失败: {e}")
     
     async def _red_packet_cleanup_scheduler(self):
-        """红包清理调度器 - 每小时清理一次过期红包"""
+        """低频维护调度器：每小时清理过期红包和一批历史钓鱼记录。"""
         while True:
             try:
                 await asyncio.sleep(3600)  # 每小时执行一次
+            except asyncio.CancelledError:
+                logger.info("低频数据库维护任务已取消")
+                break
+
+            try:
                 cleaned_count = self.red_packet_service.cleanup_expired_packets()
                 if cleaned_count > 0:
                     logger.info(f"定时清理了 {cleaned_count} 个过期红包")
-            except asyncio.CancelledError:
-                logger.info("红包清理任务已取消")
-                break
             except Exception as e:
-                logger.error(f"红包清理任务出错: {e}")
+                logger.error(f"过期红包清理任务出错: {e}")
+
+            try:
+                cleaned_records = self.log_repo.cleanup_old_fishing_records(
+                    days=30, batch_size=1000
+                )
+                if cleaned_records > 0:
+                    logger.info(f"定时清理了 {cleaned_records} 条过期钓鱼记录")
+            except Exception as e:
+                logger.error(f"过期钓鱼记录清理任务出错: {e}")
 
     def _get_effective_user_id(self, event: AstrMessageEvent):
         """获取在当前上下文中应当作为指令执行者的用户ID。

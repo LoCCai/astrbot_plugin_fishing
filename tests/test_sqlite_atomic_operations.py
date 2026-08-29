@@ -4,6 +4,7 @@ import sqlite3
 import sys
 import types
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -242,6 +243,53 @@ class SqliteAtomicOperationTests(_ClosesConnectionsMixin, unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT rare_fish_caught_today FROM fishing_zones").fetchone()[0], 0)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM user_fish_inventory").fetchone()[0], 0)
                 self.assertEqual(conn.execute("SELECT total_fishing_count FROM users").fetchone()[0], 0)
+
+    def test_fishing_settlement_does_not_delete_other_users_old_records(self):
+        with self.temp_workspace() as temp_dir:
+            db_path = Path(temp_dir) / "fish.db"
+            self._create_database(db_path)
+            old_timestamp = datetime.now() - timedelta(days=90)
+            with _sqlite(db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO fishing_records (
+                        user_id, fish_id, weight, value, timestamp, is_king_size
+                    ) VALUES (?, 1, 1, 1, ?, 0)
+                    """,
+                    ("inactive-user", old_timestamp),
+                )
+
+            repo = self._track(self.inventory_module.SqliteInventoryRepository(str(db_path)))
+            self.assertTrue(
+                repo.settle_fishing_catch(
+                    user_id="u1",
+                    fish_id=1,
+                    total_catches=1,
+                    quality_level=0,
+                    weight=20,
+                    base_value=10,
+                    earned_value=10,
+                    fishing_cost=10,
+                    fish_pond_capacity=10,
+                    timestamp=datetime.now(),
+                    zone_id=1,
+                    is_rare=False,
+                    rod_instance_id=None,
+                    rod_durability=None,
+                    rod_broken=False,
+                    accessory_instance_id=None,
+                    bait_id=None,
+                )
+            )
+
+            with _sqlite(db_path) as conn:
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM fishing_records WHERE user_id = ?",
+                        ("inactive-user",),
+                    ).fetchone()[0],
+                    1,
+                )
 
     def test_auto_fishing_toggle_does_not_overwrite_coins(self):
         with self.temp_workspace() as temp_dir:

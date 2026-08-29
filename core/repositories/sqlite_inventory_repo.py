@@ -1,7 +1,7 @@
 import sqlite3
 import threading
 from typing import Optional, List, Dict, Any, Set
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 
 from astrbot.api import logger
@@ -477,10 +477,6 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
                     )
                     """,
                     (user_id, user_id),
-                )
-                cursor.execute(
-                    "DELETE FROM fishing_records WHERE timestamp < ?",
-                    (timestamp - timedelta(days=30),),
                 )
                 conn.commit()
                 return True

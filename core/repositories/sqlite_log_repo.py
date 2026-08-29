@@ -111,7 +111,7 @@ class SqliteLogRepository(AbstractLogRepository):
                 ),
             )
 
-            # 2) 仅保留当前用户最近10条记录（按时间倒序，时间相同按record_id倒序）
+            # 2) 仅保留当前用户最近50条记录（按时间倒序，时间相同按record_id倒序）
             cursor.execute(
                 """
                 DELETE FROM fishing_records
@@ -126,18 +126,39 @@ class SqliteLogRepository(AbstractLogRepository):
                 (record.user_id, record.user_id),
             )
 
-            # 3) 清理30天前的历史记录（全局）
-            cutoff_time = datetime.now(self.UTC8) - timedelta(days=30)
+            conn.commit()
+            return True
+
+    def cleanup_old_fishing_records(
+        self, days: int = 30, batch_size: int = 1000
+    ) -> int:
+        """分批清理过期钓鱼记录，避免在钓鱼结算热事务中做全局扫描。"""
+        days = int(days)
+        batch_size = int(batch_size)
+        if days <= 0:
+            raise ValueError("days 必须大于 0")
+        if batch_size <= 0:
+            raise ValueError("batch_size 必须大于 0")
+
+        cutoff_time = datetime.now(self.UTC8) - timedelta(days=days)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
             cursor.execute(
                 """
                 DELETE FROM fishing_records
-                WHERE timestamp < ?
+                WHERE record_id IN (
+                    SELECT record_id
+                    FROM fishing_records
+                    WHERE timestamp < ?
+                    ORDER BY timestamp ASC, record_id ASC
+                    LIMIT ?
+                )
                 """,
-                (cutoff_time,),
+                (cutoff_time, batch_size),
             )
-
+            deleted_count = max(cursor.rowcount, 0)
             conn.commit()
-            return True
+            return deleted_count
 
 
     def get_unlocked_fish_ids(self, user_id: str) -> Dict[int, datetime]:
