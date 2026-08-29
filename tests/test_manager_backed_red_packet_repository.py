@@ -198,6 +198,44 @@ class ManagerBackedRedPacketRepositoryTests(unittest.TestCase):
                 ),
             )
 
+    def test_scheduled_cleanup_uses_current_schema_and_24_hour_retention(self):
+        old_packet = self._packet(
+            "old",
+            expires_at=datetime.now() - timedelta(hours=25),
+        )
+        old_packet.packet_id = self.repo.create_red_packet(old_packet)
+        self.repo.create_claim_record(
+            self.models.RedPacketRecord(
+                record_id=None,
+                packet_id=old_packet.packet_id,
+                user_id="u1",
+                amount=10,
+                claimed_at=datetime.now() - timedelta(hours=25),
+            )
+        )
+        recent_packet = self._packet(
+            "recent",
+            expires_at=datetime.now() - timedelta(hours=23),
+            is_expired=True,
+        )
+        recent_packet.packet_id = self.repo.create_red_packet(recent_packet)
+
+        self.assertEqual(self.repo.cleanup_expired_red_packets(), 1)
+
+        with sqlite3.connect(self.db_path) as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT packet_id FROM red_packets"
+                ).fetchall(),
+                [(recent_packet.packet_id,)],
+            )
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM red_packet_records"
+                ).fetchone()[0],
+                0,
+            )
+
     def test_parse_and_read_contract_is_preserved(self):
         packet = self._packet("g1")
         packet.packet_id = self.repo.create_red_packet(packet)

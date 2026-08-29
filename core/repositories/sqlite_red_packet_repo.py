@@ -399,8 +399,8 @@ class SqliteRedPacketRepository:
         def _op(cursor: sqlite3.Cursor) -> int:
             # 查找过期红包（已过期24小时以上）
             cursor.execute("""
-                SELECT id FROM red_packets
-                WHERE expired_at < ? AND status IN ('active', 'expired')
+                SELECT packet_id FROM red_packets
+                WHERE expires_at < ?
             """, (expired_time,))
             
             expired_packets = cursor.fetchall()
@@ -413,11 +413,11 @@ class SqliteRedPacketRepository:
             placeholders = ','.join(['?'] * len(packet_ids))
             
             cursor.execute(f"""
-                DELETE FROM red_packet_records WHERE red_packet_id IN ({placeholders})
+                DELETE FROM red_packet_records WHERE packet_id IN ({placeholders})
             """, packet_ids)
             
             cursor.execute(f"""
-                DELETE FROM red_packets WHERE id IN ({placeholders})
+                DELETE FROM red_packets WHERE packet_id IN ({placeholders})
             """, packet_ids)
 
             return len(packet_ids)
