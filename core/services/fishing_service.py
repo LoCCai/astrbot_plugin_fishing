@@ -69,7 +69,12 @@ class FishingService:
         # 通知目标可配置，默认群聊。可由 config['notifications']['relocation_target'] 覆盖
         notifications_cfg = self.config.get("notifications", {}) if isinstance(self.config, dict) else {}
         self._notification_target = notifications_cfg.get("relocation_target", "group")
-        
+
+    def set_daily_reset_hour(self, hour: int) -> None:
+        """实时调整每日边界，并重置线程观察点以避免重复结算。"""
+        self.daily_reset_hour = int(hour)
+        self.last_reset_time = get_last_reset_time(self.daily_reset_hour)
+        self.last_tax_reset_time = get_last_reset_time(self.daily_reset_hour)
 
     def register_notifier(self, notifier, default_target: Optional[str] = None):
         """

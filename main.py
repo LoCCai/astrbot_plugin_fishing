@@ -13,6 +13,10 @@ from astrbot.core.star.filter.permission import PermissionType
 from .core.repositories.sqlite_user_repo import SqliteUserRepository
 from .core.repositories.sqlite_item_template_repo import SqliteItemTemplateRepository
 from .core.repositories.sqlite_inventory_repo import SqliteInventoryRepository
+from .core.repositories.sqlite_aquarium_config_repo import (
+    SqliteAquariumConfigRepository,
+    SqliteFishPondConfigRepository,
+)
 from .core.repositories.sqlite_gacha_repo import SqliteGachaRepository
 from .core.repositories.sqlite_market_repo import SqliteMarketRepository
 from .core.repositories.sqlite_shop_repo import SqliteShopRepository
@@ -210,12 +214,6 @@ class FishingPlugin(Star):
                 "tax_record_retention_days": tax_config.get("tax_record_retention_days", 90),
                 "tax_record_cleanup_batch_size": tax_config.get("tax_record_cleanup_batch_size", 1000),
             },
-            "pond_upgrades": [
-                { "from": 480, "to": 999, "cost": 50000 },
-                { "from": 999, "to": 9999, "cost": 500000 },
-                { "from": 9999, "to": 99999, "cost": 50000000 },
-                { "from": 99999, "to": 999999, "cost": 5000000000 },
-            ],
             "sell_prices": {
                 "rod": { 
                     "1": sell_prices_config.get("by_rarity_1", 100),
@@ -272,6 +270,8 @@ class FishingPlugin(Star):
         self.user_repo = SqliteUserRepository(db_path)
         self.item_template_repo = SqliteItemTemplateRepository(db_path)
         self.inventory_repo = SqliteInventoryRepository(db_path)
+        self.aquarium_config_repo = SqliteAquariumConfigRepository(db_path)
+        self.fish_pond_config_repo = SqliteFishPondConfigRepository(db_path)
         self.gacha_repo = SqliteGachaRepository(db_path)
         self.market_repo = SqliteMarketRepository(db_path)
         self.shop_repo = SqliteShopRepository(db_path)
@@ -295,7 +295,17 @@ class FishingPlugin(Star):
         self.gacha_service = GachaService(self.gacha_repo, self.user_repo, self.inventory_repo, self.item_template_repo,
                                          self.log_repo, self.achievement_repo)
         # UserService 依赖 GachaService，因此在 GachaService 之后实例化
-        self.user_service = UserService(self.user_repo, self.log_repo, self.inventory_repo, self.item_template_repo, self.gacha_service, self.game_config, self.achievement_repo)
+        self.user_service = UserService(
+            self.user_repo,
+            self.log_repo,
+            self.inventory_repo,
+            self.item_template_repo,
+            self.gacha_service,
+            self.game_config,
+            self.achievement_repo,
+            self.aquarium_config_repo,
+            self.fish_pond_config_repo,
+        )
         self.inventory_service = InventoryService(
             self.inventory_repo,
             self.user_repo,
@@ -303,6 +313,7 @@ class FishingPlugin(Star):
             None,  # 先设为None，稍后设置
             self.game_mechanics_service,
             self.game_config,
+            self.fish_pond_config_repo,
         )
         self.shop_service = ShopService(self.item_template_repo, self.inventory_repo, self.user_repo, self.shop_repo, self.game_config)
         # MarketService 依赖 exchange_repo
@@ -328,7 +339,8 @@ class FishingPlugin(Star):
         self.aquarium_service = AquariumService(
             self.inventory_repo,
             self.user_repo,
-            self.item_template_repo
+            self.item_template_repo,
+            self.aquarium_config_repo,
         )
         
         # 初始化交易所服务
@@ -1805,6 +1817,8 @@ class FishingPlugin(Star):
             "user_repo",
             "item_template_repo",
             "inventory_repo",
+            "aquarium_config_repo",
+            "fish_pond_config_repo",
             "gacha_repo",
             "market_repo",
             "shop_repo",

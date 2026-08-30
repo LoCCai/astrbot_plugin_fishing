@@ -8,16 +8,15 @@
 
 <div style="background: linear-gradient(135deg, #0ea5e9 0%,#86a4f8 100%); padding: 20px; border-radius: 15px; margin: 20px 0; box-shadow: 0 8px 32px hsla(199, 94.70%, 62.70%, 0.89);">
 
-### 🛡️ **v2.6.6 SQLite 并发与低频维护加固**
+### ⚙️ **v2.6.7 容量升级独立化 + Web 设置归位**
 
-🎯 **玩法不变，数据库更稳，后台维护更轻！**
+🎯 **鱼塘、水族箱和玩法参数都能在对应后台页面安全修改并实时生效！**
 
-🔁 **事务重放** - 仓储写入统一走可重放事务，锁冲突在总预算内自动恢复<br>
-🧹 **冷热分离** - 30 天全局清理移出钓鱼结算，改为每小时分批维护<br>
-📇 **高频索引** - 历史清理与自动钓鱼轮询新增针对性索引<br>
-🧵 **连接回收** - 后台线程与插件卸载完整释放线程本地连接<br>
-🐛 **定时修复** - 修正过期红包清理使用旧字段名导致的 SQL 报错<br>
-🗄️ **轻量部署** - 继续使用 SQLite，不引入 PostgreSQL、Redis 或额外并发模型<br>
+🐠 **双容量档位** - 鱼塘与水族箱均可编辑容量、金币、钻石和说明<br>
+🖥️ **按系统归位** - 银行、交易所、市场规则进入各自页面，其余参数集中到“其他设置”<br>
+⚡ **实时生效** - 保存后直接更新运行时配置，同时持久化到插件配置<br>
+🛡️ **玩家保护** - 保持已有等级；缩容装不下或删除在用等级时整次拒绝<br>
+↩️ **安全恢复** - 两套容量档位都可一键恢复版本默认值<br>
 
 
 </div>
@@ -29,7 +28,7 @@
 [![AGPL-3.0 License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://opensource.org/licenses/AGPL-3.0)
 [![Python](https://img.shields.io/badge/Python-3.8+-green.svg)](https://python.org)
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-orange.svg)](https://github.com/astrbot/astrbot)
-[![Version](https://img.shields.io/badge/Version-2.6.6-brightgreen.svg)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-2.6.7-brightgreen.svg)](./CHANGELOG.md)
 [![Major Update](https://img.shields.io/badge/Major-Update-red.svg)](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/releases/tag/v2.0.0)
 
 ## ✨ 功能特点
@@ -108,6 +107,19 @@
 如果您有功能建议或发现问题，欢迎在 [Issues](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/issues) 中提出！
 
 ## 📦 更新记录
+
+#### ⚙️ **v2.6.7 容量升级独立化 + Web 配置归位与实时生效**
+
+- 水族箱默认档位独立到 `core/config/aquarium_upgrades.json`；鱼塘原硬编码档位独立到 `core/config/fish_pond_upgrades.json`
+- 新增迁移 050 与鱼塘配置仓储，“其他设置”页统一管理鱼塘、水族箱升级档位
+- 基础玩法、1–10 星装备回收价、借贷、骰宝、21 点和拉杆机参数进入“其他设置”
+- 银行参数放回“银行管理”，交易所参数放回“交易所管理”，市场上架税率放回“市场管理”
+- Web 保存采用深度合并并持久化，保留未展示配置；运行时缓存同步更新，无需再次重启才生效
+- 容量调整时已有玩家保持等级；缩容装不下、删除在用等级、非连续等级或非法费用会整次回滚
+- 修复交易所波动率配置路径，并补齐 6–10 星装备回收价 schema
+- 全量 154 项测试、7 组子测试通过；数据库副本 schema 49 → 50、完整性和外键检查通过
+
+---
 
 #### 🛡️ **v2.6.6 SQLite 并发与低频维护加固**
 
@@ -491,10 +503,11 @@
 ### 🐠 水族箱系统（2.0版本）
 
 - **安全存储空间**：水族箱中的鱼不会被偷取，提供完全保护
-- **容量管理**：默认50条容量，支持10级升级（最高2000条）
+- **容量管理**：版本默认50条容量、10级升级（最高2000条），管理员可在 Web 后台调整
 - **智能转移**：支持鱼塘与水族箱之间的双向转移
 - **市场集成**：从市场购买的鱼默认放入水族箱
 - **升级机制**：使用金币和钻石升级容量，费用递增
+- **实时配置**：Web 后台“水族箱升级”页可修改容量、金币与钻石费用，保存后立即生效
 - **统一短码**：使用F开头的短码（如F3）进行操作
 
 #### 水族箱使用示例
@@ -858,6 +871,9 @@
 | `/撤回红包 [红包ID]` | `/撤销红包`、`/取消红包` | 撤回自己发送的未领完红包 |
 
 ### ⚙️ 管理后台（管理员）
+
+启动 Web 后台后，可在独立的“水族箱升级”页面维护全部升级档位；修改会直接写入 SQLite，
+通过校验后立即供玩家命令读取，无需再次重启。
 
 | 命令 | 别名 | 描述 |
 |---|---|---|

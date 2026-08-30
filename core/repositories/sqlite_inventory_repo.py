@@ -6,7 +6,7 @@ import json
 from astrbot.api import logger
 # 导入抽象基类和领域模型
 from .abstract_repository import AbstractInventoryRepository
-from ..domain.models import UserFishInventoryItem, UserAquariumItem, UserRodInstance, UserAccessoryInstance, FishingZone, AquariumUpgrade
+from ..domain.models import UserFishInventoryItem, UserAquariumItem, UserRodInstance, UserAccessoryInstance, FishingZone
 from ..database.connection_manager import DatabaseConnectionManager
 
 
@@ -47,9 +47,6 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
             quantity=row['quantity'],
             added_at=row['added_at']
         )
-
-    def _row_to_aquarium_upgrade(self, row: sqlite3.Row) -> Optional[AquariumUpgrade]:
-        return None if not row else AquariumUpgrade(**row)
 
     def _row_to_rod_instance(self, row: sqlite3.Row) -> Optional[UserRodInstance]:
         if not row:
@@ -1182,26 +1179,3 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
                 """, (user_id, fish_id, quality_level))
 
         self._connection_manager.run_in_transaction(_op)
-
-    def get_aquarium_upgrades(self) -> List[AquariumUpgrade]:
-        """获取所有水族箱升级配置"""
-        with self._connection_manager.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT upgrade_id, level, capacity, cost_coins, cost_premium, description, created_at
-                FROM aquarium_upgrades 
-                ORDER BY level
-            """)
-            return [self._row_to_aquarium_upgrade(row) for row in cursor.fetchall()]
-
-    def get_aquarium_upgrade_by_level(self, level: int) -> Optional[AquariumUpgrade]:
-        """根据等级获取水族箱升级配置"""
-        with self._connection_manager.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT upgrade_id, level, capacity, cost_coins, cost_premium, description, created_at
-                FROM aquarium_upgrades 
-                WHERE level = ?
-            """, (level,))
-            row = cursor.fetchone()
-            return self._row_to_aquarium_upgrade(row) if row else None
