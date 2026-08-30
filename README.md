@@ -8,17 +8,16 @@
 
 <div style="background: linear-gradient(135deg, #0ea5e9 0%,#86a4f8 100%); padding: 20px; border-radius: 15px; margin: 20px 0; box-shadow: 0 8px 32px hsla(199, 94.70%, 62.70%, 0.89);">
 
-### 🏦 **v2.6.5 银行经济闭环 + 记账与准入加固**
+### 🛡️ **v2.6.6 SQLite 并发与低频维护加固**
 
-🎯 **金币有地方存了，还能吃利息！**
+🎯 **玩法不变，数据库更稳，后台维护更轻！**
 
-🏦 **银行活期** - 存取款即时到账，每日 100 万免费提现额度，超出部分收取 3% 手续费<br>
-📜 **定期存款** - 1/3/7/30 天档位，最高 5% 到期收益，提前取出不计收益<br>
-🔐 **大额预约** - 单笔 500 万及以上取款需提前 24 小时预约，期间资金锁定<br>
-🧾 **资产税可配** - 银行默认作为资产税缓冲，计税范围与扣款来源均可调整<br>
-🔓 **生命周期补全** - 预约超时自动解锁、到期定期自动结算、欠税可主动缴清<br>
-📒 **银行流水** - 存取、利息、手续费、违约金、欠税全部留痕<br>
-📊 **后台管理** - 新增银行管理与税收管理页面<br>
+🔁 **事务重放** - 仓储写入统一走可重放事务，锁冲突在总预算内自动恢复<br>
+🧹 **冷热分离** - 30 天全局清理移出钓鱼结算，改为每小时分批维护<br>
+📇 **高频索引** - 历史清理与自动钓鱼轮询新增针对性索引<br>
+🧵 **连接回收** - 后台线程与插件卸载完整释放线程本地连接<br>
+🐛 **定时修复** - 修正过期红包清理使用旧字段名导致的 SQL 报错<br>
+🗄️ **轻量部署** - 继续使用 SQLite，不引入 PostgreSQL、Redis 或额外并发模型<br>
 
 
 </div>
@@ -30,7 +29,7 @@
 [![AGPL-3.0 License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://opensource.org/licenses/AGPL-3.0)
 [![Python](https://img.shields.io/badge/Python-3.8+-green.svg)](https://python.org)
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-orange.svg)](https://github.com/astrbot/astrbot)
-[![Version](https://img.shields.io/badge/Version-2.6.4-brightgreen.svg)](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/releases/tag/v2.6.4)
+[![Version](https://img.shields.io/badge/Version-2.6.6-brightgreen.svg)](./CHANGELOG.md)
 [![Major Update](https://img.shields.io/badge/Major-Update-red.svg)](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/releases/tag/v2.0.0)
 
 ## ✨ 功能特点
@@ -109,6 +108,18 @@
 如果您有功能建议或发现问题，欢迎在 [Issues](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/issues) 中提出！
 
 ## 📦 更新记录
+
+#### 🛡️ **v2.6.6 SQLite 并发与低频维护加固**
+
+- 九个核心仓储及库存、商店、市场的剩余写路径统一使用连接管理器与可重放事务
+- 30 天全局钓鱼记录清理移出结算热事务，改为每小时最多清理 1000 条
+- 新增迁移 049，为历史记录清理和自动钓鱼轮询建立索引
+- 后台线程和插件卸载时完整关闭线程本地数据库连接
+- 修复过期红包定时清理使用旧字段名导致的 SQL 报错
+- 保持 SQLite 部署，不改变玩法，不引入 PostgreSQL、Redis，也不把数据库调用改为 `asyncio.to_thread`
+- 全量测试与现有数据库副本 47 → 49 升级验证通过
+
+---
 
 #### 🔒 **v2.6.5 银行经济闭环 + 记账与准入加固**
 
