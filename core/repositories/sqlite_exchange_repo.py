@@ -92,6 +92,7 @@ class SqliteExchangeRepository(AbstractExchangeRepository):
         c.execute("""
             INSERT INTO user_commodities (user_id, commodity_id, quantity, purchase_price, purchased_at, expires_at)
             VALUES (?, ?, ?, ?, ?, ?)
+            RETURNING instance_id
         """, (
             user_commodity.user_id, user_commodity.commodity_id, user_commodity.quantity,
             user_commodity.purchase_price, user_commodity.purchased_at.isoformat(),

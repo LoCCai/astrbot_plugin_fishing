@@ -174,6 +174,7 @@ class SqliteGachaRepository(AbstractGachaRepository):
             cursor.execute("""
                 INSERT INTO gacha_pools (name, description, cost_coins, cost_premium_currency, is_limited_time, open_until)
                 VALUES (?, ?, ?, ?, ?, ?)
+                RETURNING gacha_pool_id
             """, (
                 f"{original_pool['name']} (副本)",
                 original_pool['description'],

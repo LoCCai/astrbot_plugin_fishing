@@ -155,13 +155,13 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
             try:
                 cursor.execute("""
                     SELECT f.rarity, ufi.quality_level,
-                           SUM(CASE ? WHEN 1 THEN MAX(ufi.quantity - 1, 0) ELSE ufi.quantity END) AS quantity,
-                           SUM(CASE ? WHEN 1 THEN MAX(ufi.quantity - 1, 0) ELSE ufi.quantity END
+                           SUM(CASE ? WHEN 1 THEN GREATEST(ufi.quantity - 1, 0) ELSE ufi.quantity END) AS quantity,
+                           SUM(CASE ? WHEN 1 THEN GREATEST(ufi.quantity - 1, 0) ELSE ufi.quantity END
                                * f.base_value * (1 + ufi.quality_level)) AS value
                     FROM user_fish_inventory ufi
                     JOIN fish f ON ufi.fish_id = f.fish_id
                     WHERE ufi.user_id = ?
-                      AND (? IS NULL OR f.rarity IN (SELECT value FROM json_each(?)))
+                      AND (? IS NULL OR f.rarity IN (SELECT CAST(value AS BIGINT) FROM json_each(?)))
                     GROUP BY f.rarity, ufi.quality_level
                     HAVING quantity > 0
                 """, (keep_flag, keep_flag, user_id, rarity_json, rarity_json))
@@ -180,7 +180,7 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
                         WHERE user_id = ? AND quantity > 1
                           AND fish_id IN (
                               SELECT fish_id FROM fish
-                              WHERE (? IS NULL OR rarity IN (SELECT value FROM json_each(?)))
+                              WHERE (? IS NULL OR rarity IN (SELECT CAST(value AS BIGINT) FROM json_each(?)))
                           )
                         """,
                         (user_id, rarity_json, rarity_json),
@@ -192,7 +192,7 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
                         WHERE user_id = ?
                           AND fish_id IN (
                               SELECT fish_id FROM fish
-                              WHERE (? IS NULL OR rarity IN (SELECT value FROM json_each(?)))
+                              WHERE (? IS NULL OR rarity IN (SELECT CAST(value AS BIGINT) FROM json_each(?)))
                           )
                         """,
                         (user_id, rarity_json, rarity_json),
@@ -201,7 +201,7 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
                 cursor.execute(
                     """
                     UPDATE users
-                    SET coins = coins + ?, max_coins = MAX(max_coins, coins + ?)
+                    SET coins = coins + ?, max_coins = GREATEST(max_coins, coins + ?)
                     WHERE user_id = ?
                     """,
                     (total_value, total_value, user_id),
@@ -298,7 +298,7 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
                 cursor.execute(
                     """
                     UPDATE users
-                    SET coins = coins + ?, max_coins = MAX(max_coins, coins + ?)
+                    SET coins = coins + ?, max_coins = GREATEST(max_coins, coins + ?)
                     WHERE user_id = ?
                     """,
                     (result["total_value"], result["total_value"], user_id),
@@ -456,7 +456,7 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
                     ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
                     ON CONFLICT(user_id, fish_id) DO UPDATE SET
                         last_caught_at = excluded.last_caught_at,
-                        max_weight = MAX(max_weight, excluded.max_weight),
+                        max_weight = GREATEST(max_weight, excluded.max_weight),
                         min_weight = MIN(min_weight, excluded.min_weight),
                         total_caught = total_caught + 1,
                         total_weight = total_weight + excluded.total_weight
@@ -651,8 +651,8 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO user_bait_inventory (user_id, bait_id, quantity)
-                VALUES (?, ?, MAX(0, ?))
-                ON CONFLICT(user_id, bait_id) DO UPDATE SET quantity = MAX(0, quantity + ?)
+                VALUES (?, ?, GREATEST(0, ?))
+                ON CONFLICT(user_id, bait_id) DO UPDATE SET quantity = GREATEST(0, quantity + ?)
             """, (user_id, bait_id, delta, delta))
             # 删除数量为0的行，保持数据整洁
             cursor.execute("DELETE FROM user_bait_inventory WHERE user_id = ? AND quantity <= 0", (user_id,))
@@ -680,8 +680,8 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
             cursor.execute(
                 """
                 INSERT INTO user_items (user_id, item_id, quantity)
-                VALUES (?, ?, MAX(0, ?))
-                ON CONFLICT(user_id, item_id) DO UPDATE SET quantity = MAX(0, quantity + ?)
+                VALUES (?, ?, GREATEST(0, ?))
+                ON CONFLICT(user_id, item_id) DO UPDATE SET quantity = GREATEST(0, quantity + ?)
                 """,
                 (user_id, item_id, delta, delta),
             )
@@ -703,6 +703,7 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
             cursor.execute("""
                 INSERT INTO user_rods (user_id, rod_id, current_durability, obtained_at, refine_level, is_equipped, is_locked)
                 VALUES (?, ?, ?, ?, ?, 0, 0)
+                RETURNING rod_instance_id
             """, (user_id, rod_id, durability, now, refine_level))
             instance_id = cursor.lastrowid
             conn.commit()
@@ -731,6 +732,7 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
             cursor.execute("""
                 INSERT INTO user_accessories (user_id, accessory_id, obtained_at, refine_level, is_equipped, is_locked)
                 VALUES (?, ?, ?, ?, 0, 0)
+                RETURNING accessory_instance_id
             """, (user_id, accessory_id, now, refine_level))
             instance_id = cursor.lastrowid
             conn.commit()
@@ -751,8 +753,8 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO user_fish_inventory (user_id, fish_id, quality_level, quantity)
-                VALUES (?, ?, ?, MAX(0, ?))
-                ON CONFLICT(user_id, fish_id, quality_level) DO UPDATE SET quantity = MAX(0, quantity + ?)
+                VALUES (?, ?, ?, GREATEST(0, ?))
+                ON CONFLICT(user_id, fish_id, quality_level) DO UPDATE SET quantity = GREATEST(0, quantity + ?)
             """, (user_id, fish_id, quality_level, delta, delta))
             # 删除数量为0的行，保持数据整洁
             cursor.execute("DELETE FROM user_fish_inventory WHERE user_id = ? AND quantity <= 0", (user_id,))

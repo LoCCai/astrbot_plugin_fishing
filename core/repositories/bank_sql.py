@@ -40,10 +40,12 @@ def _now(now: Optional[datetime] = None) -> datetime:
 def ensure_account(cursor: sqlite3.Cursor, user_id: str, now: Optional[datetime] = None) -> None:
     """确保银行账户存在。用户不存在时会因外键约束抛错，由调用方先行校验。"""
     stamp = _now(now)
+    # ON CONFLICT DO NOTHING 同时兼容 SQLite(≥3.24) 与 PostgreSQL
     cursor.execute("""
-        INSERT OR IGNORE INTO bank_accounts
+        INSERT INTO bank_accounts
             (user_id, balance, locked_balance, today_withdrawn, last_withdraw_reset_date, created_at, updated_at)
         VALUES (?, 0, 0, 0, NULL, ?, ?)
+        ON CONFLICT DO NOTHING
     """, (user_id, stamp, stamp))
 
 
@@ -409,7 +411,7 @@ def expire_stale_reservations(
             continue
         cursor.execute("""
             UPDATE bank_accounts
-            SET locked_balance = MAX(locked_balance - ?, 0), updated_at = ?
+            SET locked_balance = GREATEST(locked_balance - ?, 0), updated_at = ?
             WHERE user_id = ?
         """, (row["amount"], stamp, row["user_id"]))
         record_transaction(

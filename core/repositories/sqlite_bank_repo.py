@@ -295,6 +295,7 @@ class SqliteBankRepository:
                 INSERT INTO bank_withdraw_reservations
                     (user_id, amount, fee_amount, status, ready_at, expires_at, created_at, updated_at)
                 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
+                RETURNING reservation_id
             """, (user_id, amount, fee_amount, ready_at, expires_at, now, now))
             reservation_id = cursor.lastrowid
             bank_sql.record_transaction(
@@ -357,7 +358,7 @@ class SqliteBankRepository:
             cursor.execute("""
                 UPDATE bank_accounts
                 SET balance = balance - ?,
-                    locked_balance = MAX(locked_balance - ?, 0),
+                    locked_balance = GREATEST(locked_balance - ?, 0),
                     today_withdrawn = today_withdrawn + ?,
                     updated_at = ?
                 WHERE user_id = ?
@@ -412,7 +413,7 @@ class SqliteBankRepository:
 
             cursor.execute("""
                 UPDATE bank_accounts
-                SET locked_balance = MAX(locked_balance - ?, 0), updated_at = ?
+                SET locked_balance = GREATEST(locked_balance - ?, 0), updated_at = ?
                 WHERE user_id = ?
             """, (reservation.amount, now, user_id))
             cursor.execute("""
@@ -498,6 +499,7 @@ class SqliteBankRepository:
                     user_id, principal, term_days, interest_rate, expected_interest,
                     status, started_at, matures_at, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+                RETURNING deposit_id
             """, (
                 user_id, principal, term_days, interest_rate, expected_interest,
                 now, matures_at, now, now,
@@ -924,7 +926,7 @@ class SqliteBankRepository:
             cursor.execute("""
                 SELECT user_id, balance, locked_balance, today_withdrawn
                 FROM bank_accounts
-                WHERE user_id IN (SELECT value FROM json_each(?))
+                WHERE user_id IN (SELECT CAST(value AS TEXT) FROM json_each(?))
             """, (json.dumps(user_ids),))
             for row in cursor.fetchall():
                 summary = summaries[row["user_id"]]
@@ -936,7 +938,7 @@ class SqliteBankRepository:
             cursor.execute("""
                 SELECT user_id, COALESCE(SUM(amount), 0) AS pending_amount
                 FROM bank_withdraw_reservations
-                WHERE user_id IN (SELECT value FROM json_each(?)) AND status = 'pending'
+                WHERE user_id IN (SELECT CAST(value AS TEXT) FROM json_each(?)) AND status = 'pending'
                 GROUP BY user_id
             """, (json.dumps(user_ids),))
             for row in cursor.fetchall():
@@ -953,7 +955,7 @@ class SqliteBankRepository:
                     SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_fixed_count,
                     COUNT(*) AS total_fixed_count
                 FROM bank_fixed_deposits
-                WHERE user_id IN (SELECT value FROM json_each(?))
+                WHERE user_id IN (SELECT CAST(value AS TEXT) FROM json_each(?))
                 GROUP BY user_id
             """, (json.dumps(user_ids),))
             for row in cursor.fetchall():
@@ -971,7 +973,7 @@ class SqliteBankRepository:
 
             cursor.execute("""
                 SELECT user_id, debt_amount FROM tax_debts
-                WHERE user_id IN (SELECT value FROM json_each(?))
+                WHERE user_id IN (SELECT CAST(value AS TEXT) FROM json_each(?))
             """, (json.dumps(user_ids),))
             for row in cursor.fetchall():
                 summaries[row["user_id"]]["tax_debt"] = row["debt_amount"] or 0

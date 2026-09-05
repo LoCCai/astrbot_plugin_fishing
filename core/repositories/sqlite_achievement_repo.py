@@ -87,7 +87,12 @@ class SqliteAchievementRepository(AbstractAchievementRepository):
     def grant_title_to_user(self, user_id: str, title_id: int) -> None:
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("INSERT OR IGNORE INTO user_titles (user_id, title_id, unlocked_at) VALUES (?, ?, ?)", (user_id, title_id, datetime.now()))
+            # ON CONFLICT DO NOTHING 同时兼容 SQLite(≥3.24) 与 PostgreSQL
+            cursor.execute(
+                "INSERT INTO user_titles (user_id, title_id, unlocked_at) VALUES (?, ?, ?)"
+                " ON CONFLICT DO NOTHING",
+                (user_id, title_id, datetime.now()),
+            )
             conn.commit()
 
     def revoke_title_from_user(self, user_id: str, title_id: int) -> None:

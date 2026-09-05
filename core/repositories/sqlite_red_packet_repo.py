@@ -10,6 +10,7 @@ from typing import Optional, List
 from astrbot.api import logger
 
 from ..database.connection_manager import DatabaseConnectionManager
+from ..database.identity_reset import delete_resetting_identity
 from ..domain.models import RedPacket, RedPacketRecord
 
 
@@ -86,6 +87,7 @@ class SqliteRedPacketRepository:
                     sender_id, group_id, packet_type, total_amount, total_count,
                     remaining_amount, remaining_count, password, created_at, expires_at, is_expired
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING packet_id
             """, (
                 packet.sender_id, packet.group_id, packet.packet_type,
                 packet.total_amount, packet.total_count,
@@ -139,6 +141,7 @@ class SqliteRedPacketRepository:
             cursor.execute("""
                 INSERT INTO red_packet_records (packet_id, user_id, amount, claimed_at)
                 VALUES (?, ?, ?, ?)
+                RETURNING record_id
             """, (record.packet_id, record.user_id, record.amount, record.claimed_at))
             conn.commit()
             return cursor.lastrowid
@@ -224,9 +227,7 @@ class SqliteRedPacketRepository:
             
             # 如果没有红包记录了，重置自增ID
             if remaining_count == 0:
-                cursor.execute("""
-                    DELETE FROM sqlite_sequence WHERE name = 'red_packets'
-                """)
+                delete_resetting_identity(cursor, "red_packets")
                 logger.info("已重置红包ID计数器")
             
             conn.commit()
@@ -361,9 +362,7 @@ class SqliteRedPacketRepository:
             
             # 如果没有红包记录了，重置自增ID
             if remaining_count == 0:
-                cursor.execute("""
-                    DELETE FROM sqlite_sequence WHERE name = 'red_packets'
-                """)
+                delete_resetting_identity(cursor, "red_packets")
                 logger.info("已重置红包ID计数器")
             
             conn.commit()
@@ -391,9 +390,7 @@ class SqliteRedPacketRepository:
             cursor.execute("DELETE FROM red_packets")
             
             # 重置自增ID计数器
-            cursor.execute("""
-                DELETE FROM sqlite_sequence WHERE name = 'red_packets'
-            """)
+            delete_resetting_identity(cursor, "red_packets")
             
             conn.commit()
             

@@ -140,6 +140,7 @@ class LoanService:
                         borrowed_at, due_amount, repaid_amount, status,
                         due_date, created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING loan_id
                 """, (
                     loan.lender_id, loan.borrower_id, loan.principal, loan.interest_rate,
                     loan.borrowed_at, loan.due_amount, loan.repaid_amount, loan.status,
@@ -692,6 +693,7 @@ class LoanService:
                         borrowed_at, due_amount, repaid_amount, status,
                         due_date, created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING loan_id
                 """, (
                     loan.lender_id, loan.borrower_id, loan.principal, loan.interest_rate,
                     loan.borrowed_at, loan.due_amount, loan.repaid_amount, loan.status,

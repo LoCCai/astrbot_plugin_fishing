@@ -116,9 +116,10 @@ class SqliteShopRepository(AbstractShopRepository):
         cursor.execute(
             """
             INSERT INTO shops (
-                name, description, shop_type, is_active, 
+                name, description, shop_type, is_active,
                 start_time, end_time, daily_start_time, daily_end_time, sort_order
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING shop_id
             """,
             (
                 data["name"],
@@ -205,6 +206,7 @@ class SqliteShopRepository(AbstractShopRepository):
                 stock_total, stock_sold, per_user_limit, per_user_daily_limit,
                 is_active, start_time, end_time, sort_order
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING item_id
             """,
             (
                 shop_id,

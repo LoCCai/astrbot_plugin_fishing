@@ -7,6 +7,13 @@ from contextlib import contextmanager
 from astrbot.api import logger
 
 
+def _greatest2(a, b):
+    """双参标量 GREATEST：与 PostgreSQL 内置语义一致（任一为 NULL 返回 NULL）。"""
+    if a is None or b is None:
+        return None
+    return a if a >= b else b
+
+
 class DatabaseConnectionManager:
     """数据库连接管理器，提供线程安全的连接管理和重试机制"""
     
@@ -58,6 +65,9 @@ class DatabaseConnectionManager:
         # journal_mode 是数据库级设置，由初始化/迁移负责。连接建立时切换模式
         # 会与正在进行的写事务竞争锁，反而可能让重试尚未开始就失败。
         conn.execute("PRAGMA synchronous = NORMAL;")
+        # GREATEST(a, b) 与 PostgreSQL 内置函数同名：仓储层的双方言语句
+        # 统一书写 GREATEST，SQLite 侧以同名声标函数补齐。
+        conn.create_function("GREATEST", 2, _greatest2, deterministic=True)
         return conn
     
     @contextmanager

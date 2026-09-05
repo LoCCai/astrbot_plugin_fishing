@@ -94,6 +94,7 @@ class SqliteLoanRepository:
                     borrowed_at, due_amount, repaid_amount, status,
                     due_date, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING loan_id
             """, (
                 loan.lender_id, loan.borrower_id, loan.principal, loan.interest_rate,
                 loan.borrowed_at or now, loan.due_amount, loan.repaid_amount, loan.status,
