@@ -15,13 +15,13 @@ from ..domain.loan_models import Loan
 class SqliteLoanRepository:
     """借贷数据仓储的SQLite实现"""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, connection_manager=None):
         self.db_path = db_path
         # 不使用 detect_types：loans 表列类型为 TIMESTAMP，
         # Python 内置 convert_timestamp 解析器极度脆弱，
         # 任何非 "YYYY-MM-DD HH:MM:SS" 格式都会崩溃。
         # 改为在 _row_to_loan → _parse_datetime 中手动解析。
-        self._connection_manager = DatabaseConnectionManager(db_path, detect_types=0)
+        self._connection_manager = connection_manager or DatabaseConnectionManager(db_path, detect_types=0)
 
     def _get_connection(self) -> sqlite3.Connection:
         return self._connection_manager.connection()

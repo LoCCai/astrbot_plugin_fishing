@@ -9,11 +9,10 @@ from ..domain.models import Fish, Rod, Bait, Accessory, Title, Item
 class SqliteItemTemplateRepository(AbstractItemTemplateRepository):
     """物品模板仓储的SQLite实现"""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, connection_manager=None):
         self.db_path = db_path
-        # 保留历史行为：关闭 detect_types 与外键约束（模板全量重建时
-        # 需要绕开用户库存对模板行的外键引用）
-        self._connection_manager = DatabaseConnectionManager(db_path, detect_types=0, foreign_keys=False)
+        self._connection_manager = connection_manager or DatabaseConnectionManager(
+            db_path, detect_types=0, foreign_keys=False)
 
     def _get_connection(self) -> sqlite3.Connection:
         """获取一个线程安全的数据库连接。"""

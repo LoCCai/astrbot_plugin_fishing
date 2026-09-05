@@ -1,5 +1,4 @@
 import sqlite3
-import threading
 from typing import Optional, List, Tuple, Any
 from datetime import datetime
 
@@ -14,10 +13,9 @@ from ..database.connection_manager import DatabaseConnectionManager
 class SqliteMarketRepository(AbstractMarketRepository):
     """市场仓储的SQLite实现"""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, connection_manager=None):
         self.db_path = db_path
-        self.db_manager = DatabaseConnectionManager(db_path)
-        self._local = threading.local()
+        self.db_manager = connection_manager or DatabaseConnectionManager(db_path)
 
     def _get_connection(self) -> sqlite3.Connection:
         """获取一个线程安全的数据库连接。"""

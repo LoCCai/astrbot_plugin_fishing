@@ -17,9 +17,9 @@ from ..domain.models import RedPacket, RedPacketRecord
 class SqliteRedPacketRepository:
     """红包数据仓储的SQLite实现"""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, connection_manager=None):
         self.db_path = db_path
-        self._connection_manager = DatabaseConnectionManager(db_path)
+        self._connection_manager = connection_manager or DatabaseConnectionManager(db_path)
 
     def _get_connection(self) -> sqlite3.Connection:
         return self._connection_manager.connection()

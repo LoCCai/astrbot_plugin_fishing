@@ -12,9 +12,10 @@ from .abstract_repository import AbstractUserRepository
 class SqliteUserRepository(AbstractUserRepository):
     """用户数据仓储的SQLite实现"""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, connection_manager=None):
         self.db_path = db_path
-        self._connection_manager = DatabaseConnectionManager(db_path)
+        # connection_manager 可注入 PostgreSQL 后端；缺省为 SQLite
+        self._connection_manager = connection_manager or DatabaseConnectionManager(db_path)
 
     def _get_connection(self) -> sqlite3.Connection:
         return self._connection_manager.connection()

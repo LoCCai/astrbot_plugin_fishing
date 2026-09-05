@@ -7,10 +7,9 @@ from .abstract_repository import AbstractExchangeRepository
 
 
 class SqliteExchangeRepository(AbstractExchangeRepository):
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, connection_manager=None):
         self.db_path = db_path
-        # 保留历史行为：无行工厂（调用方按位置解包元组）、无类型解析、关闭外键
-        self._connection_manager = DatabaseConnectionManager(
+        self._connection_manager = connection_manager or DatabaseConnectionManager(
             db_path, detect_types=0, foreign_keys=False, row_factory=None
         )
 

@@ -10,9 +10,9 @@ from ..domain.models import Achievement
 class SqliteAchievementRepository(AbstractAchievementRepository):
     """成就数据仓储的SQLite实现"""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, connection_manager=None):
         self.db_path = db_path
-        self._connection_manager = DatabaseConnectionManager(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
+        self._connection_manager = connection_manager or DatabaseConnectionManager(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
 
     def _get_connection(self) -> sqlite3.Connection:
         return self._connection_manager.connection()

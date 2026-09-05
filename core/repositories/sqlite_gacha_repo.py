@@ -9,11 +9,9 @@ from ..domain.models import GachaPool, GachaPoolItem
 class SqliteGachaRepository(AbstractGachaRepository):
     """抽卡仓储的SQLite实现"""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, connection_manager=None):
         self.db_path = db_path
-        # 保持历史行为：关闭 detect_types，时间列按原始字符串读出。
-        # 外键约束默认开启，确保奖池删除时，其下的物品也被删除。
-        self._connection_manager = DatabaseConnectionManager(db_path, detect_types=0)
+        self._connection_manager = connection_manager or DatabaseConnectionManager(db_path, detect_types=0)
 
     def _get_connection(self) -> sqlite3.Connection:
         """获取一个线程安全的数据库连接。"""

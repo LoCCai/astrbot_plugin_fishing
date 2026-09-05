@@ -1,29 +1,21 @@
 import sqlite3
-import threading
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 
+from ..database.connection_manager import DatabaseConnectionManager
 from .abstract_repository import AbstractShopRepository
 
 
 class SqliteShopRepository(AbstractShopRepository):
     """商店系统的 SQLite 实现（新设计：shops + shop_items + shop_item_costs + shop_item_rewards）"""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, connection_manager=None):
         self.db_path = db_path
-        self._local = threading.local()
+        # 商店仓储并入统一连接管理（detect_types/外键与 manager 默认一致）
+        self._connection_manager = connection_manager or DatabaseConnectionManager(db_path)
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = getattr(self._local, "connection", None)
-        if conn is None:
-            conn = sqlite3.connect(
-                self.db_path,
-                detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
-            )
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON;")
-            self._local.connection = conn
-        return conn
+        return self._connection_manager.connection()
 
     def _normalize_row(self, row: sqlite3.Row) -> Dict[str, Any]:
         """标准化行数据，处理类型转换"""

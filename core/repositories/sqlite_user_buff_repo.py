@@ -12,9 +12,9 @@ DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 class SqliteUserBuffRepository(AbstractUserBuffRepository):
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, connection_manager=None):
         self.db_path = db_path
-        self._connection_manager = DatabaseConnectionManager(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
+        self._connection_manager = connection_manager or DatabaseConnectionManager(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
 
     def _get_connection(self) -> sqlite3.Connection:
         """获取一个线程安全的数据库连接。"""

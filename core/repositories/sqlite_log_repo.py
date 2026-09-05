@@ -9,9 +9,9 @@ from ..domain.models import FishingRecord, GachaRecord, WipeBombLog, TaxRecord, 
 class SqliteLogRepository(AbstractLogRepository):
     """日志类数据仓储的SQLite实现"""
 
-    def __init__(self, db_path: str, tax_record_retention_days: int = 90, tax_record_cleanup_batch_size: int = 1000):
+    def __init__(self, db_path: str, tax_record_retention_days: int = 90, tax_record_cleanup_batch_size: int = 1000, connection_manager=None):
         self.db_path = db_path
-        self._connection_manager = DatabaseConnectionManager(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
+        self._connection_manager = connection_manager or DatabaseConnectionManager(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
         # 定义UTC+8时区
         self.UTC8 = timezone(timedelta(hours=8))
         self.tax_record_retention_days = int(tax_record_retention_days)

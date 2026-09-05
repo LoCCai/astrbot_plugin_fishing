@@ -27,9 +27,9 @@ class SqliteBankRepository:
     时间一律使用 get_now()（UTC+8），与插件其它模块保持同一基准。
     """
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, connection_manager=None):
         self.db_path = db_path
-        self._conn_mgr = DatabaseConnectionManager(db_path)
+        self._conn_mgr = connection_manager or DatabaseConnectionManager(db_path)
 
     def close_connection(self) -> None:
         self._conn_mgr.close_connection()
