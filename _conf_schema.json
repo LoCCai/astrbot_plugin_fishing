@@ -1,4 +1,59 @@
 {
+  "database": {
+    "description": "数据库后端设置",
+    "type": "object",
+    "items": {
+      "backend": {
+        "description": "数据库类型",
+        "type": "string",
+        "options": ["sqlite", "postgres"],
+        "default": "sqlite",
+        "hint": "选择 postgres 需在插件环境安装 pg8000，并先对目标库执行插件自带的 postgres_schema.sql 建库"
+      },
+      "pg_dsn": {
+        "description": "PostgreSQL 连接串（可选）",
+        "type": "string",
+        "default": "",
+        "hint": "形如 postgresql://用户名:密码@主机:5432/库名；填写后忽略下方分项配置"
+      },
+      "pg_host": {
+        "description": "PostgreSQL 主机",
+        "type": "string",
+        "default": "127.0.0.1"
+      },
+      "pg_port": {
+        "description": "PostgreSQL 端口",
+        "type": "int",
+        "default": 5432
+      },
+      "pg_database": {
+        "description": "PostgreSQL 数据库名",
+        "type": "string",
+        "default": "fishing"
+      },
+      "pg_user": {
+        "description": "PostgreSQL 用户名",
+        "type": "string",
+        "default": "postgres"
+      },
+      "pg_password": {
+        "description": "PostgreSQL 密码",
+        "type": "string",
+        "default": ""
+      },
+      "pg_connect_timeout": {
+        "description": "PostgreSQL 连接超时（秒）",
+        "type": "int",
+        "default": 10
+      },
+      "migrate_from_sqlite": {
+        "description": "首次启用时把本地 SQLite 数据导出为迁移脚本",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后启动会把数据导出到插件数据目录的 postgres_data.sql，以 psql -f 导入即完成迁移；不开启则直接使用新的空数据库"
+      }
+    }
+  },
   "webui": {
     "description": "Web管理界面配置",
     "type": "object",

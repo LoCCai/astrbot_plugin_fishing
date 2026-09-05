@@ -1,3 +1,4 @@
 pyyaml>=6.0
 quart
 numpy>=1.21.0
+pg8000>=1.30

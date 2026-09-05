@@ -1,0 +1,501 @@
+"""PostgreSQL 后端：pg8000 连接管理器、适配游标与数据迁移导出。
+
+（本文件为待启用交付物：重命名为 postgres_backend.py 即可生效，
+见同目录 POSTGRES_SETUP.md）
+
+安全边界：仓储层传入的语句都是源码内静态 SQL（值全部 ? 参数绑定）。
+适配游标只做两件事：
+1. BEGIN/PRAGMA/COMMIT 语句直接跳过（pg8000 自动管理事务与连接属性）；
+2. 维护 sqlite3 风格的 lastrowid / rowcount / fetch* 语义
+   （带 RETURNING <自增主键> 的插入语句自动取回自增值）。
+
+接口与 core.database.connection_manager.DatabaseConnectionManager 完全同构
+（connection/get_connection/transaction/run_in_transaction/execute_with_retry/
+close_connection），仓储层通过可选注入切换后端，SQLite 默认路径零变化。
+"""
+
+import os
+import re
+import sqlite3
+import threading
+import time
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+
+from astrbot.api import logger
+
+from .postgres_schema import (
+    META_INSERT_SQL,
+    TABLE_NAMES,
+    USERS_EXIST_SQL,
+)
+
+UTC8 = timezone(timedelta(hours=8))
+
+_RETRYABLE_MARKERS = ("deadlock", "serialization", "lock", "connection", "server closed", "timeout")
+
+_EXECUTE_MODES = ("none", "one", "all")
+
+# 仓储层的显式事务控制与 PRAGMA 语句在 PG 下由驱动语义替代
+_SKIP_PREFIXES = ("BEGIN", "PRAGMA", "COMMIT")
+
+# iterdump 数据行的解析：INSERT INTO "users" VALUES(...)
+_DUMP_INSERT_RE = re.compile(r'^INSERT INTO "([A-Za-z_]\w*)"')
+
+
+def require_pg8000_dbapi():
+    """延迟导入 pg8000.dbapi 并启用 qmark 参数风格，未安装时给出提示。"""
+    try:
+        import pg8000
+        import pg8000.dbapi
+    except ImportError as exc:
+        raise RuntimeError(
+            "已选择 PostgreSQL 后端但缺少驱动：请在插件环境中安装 pg8000（纯 Python，无需编译）"
+        ) from exc
+    # 仓储层语句统一使用 SQLite 风格的 ? 占位符
+    pg8000.paramstyle = "qmark"
+    return pg8000.dbapi
+
+
+def _parse_datetime_value(value):
+    """把 SQLite 里以文本存储的时间解析为 UTC+8 aware datetime。"""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC8)
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8")
+        except UnicodeDecodeError:
+            return value
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return value
+    normalized = text.replace("T", " ")
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+    ):
+        try:
+            parsed = datetime.strptime(normalized, fmt)
+            return parsed.replace(tzinfo=UTC8)
+        except ValueError:
+            continue
+    try:
+        parsed = datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC8)
+    except ValueError:
+        logger.warning("PG 迁移：无法解析时间值 %r，按原样写入", value)
+        return value
+
+
+def _adapt_value(value, pg_type: str):
+    """按目标 PG 列类型适配来自 SQLite 的原始值。"""
+    if value is None:
+        return None
+    if pg_type in ("BIGINT", "SMALLINT"):
+        if isinstance(value, bool):
+            return 1 if value else 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+    if pg_type == "DOUBLE PRECISION":
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return value
+    if pg_type == "TIMESTAMPTZ":
+        return _parse_datetime_value(value)
+    if pg_type == "DATE":
+        adapted = _parse_datetime_value(value)
+        return adapted.date() if isinstance(adapted, datetime) else adapted
+    if pg_type == "BYTEA":
+        return bytes(value) if isinstance(value, (bytes, bytearray, memoryview)) else value
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", errors="replace")
+    return value
+
+
+class PostgresRow:
+    """同时支持位置访问与列名访问的行包装（对齐 sqlite3.Row 习惯）。"""
+
+    __slots__ = ("_values", "_names", "_lower")
+
+    def __init__(self, values, names):
+        self._values = tuple(values)
+        self._names = tuple(names)
+        self._lower = {name.lower(): idx for idx, name in enumerate(names)}
+
+    def __getitem__(self, key):
+        if isinstance(key, (int, slice)):
+            return self._values[key]
+        if isinstance(key, str):
+            if key in self._names:
+                return self._values[self._names.index(key)]
+            idx = self._lower.get(key.lower())
+            if idx is not None:
+                return self._values[idx]
+            raise KeyError(key)
+        raise TypeError("非法的行索引: %r" % (key,))
+
+    def keys(self):
+        return list(self._names)
+
+    def __len__(self):
+        return len(self._values)
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def __repr__(self):
+        return "PostgresRow(%s)" % (dict(zip(self._names, self._values)),)
+
+
+class TranslatedCursor:
+    """适配游标：跳过驱动替代语句、透传 qmark 执行、包装结果行。
+
+    维护 sqlite3 风格的 lastrowid / rowcount / fetch* 语义
+    （lastrowid 来自带 RETURNING <自增主键> 的插入语句）。
+    """
+
+    def __init__(self, dbapi_cursor, manager):
+        self._cursor = dbapi_cursor
+        self._manager = manager
+        self._rows = []
+        self._columns = []
+        self._lastrowid = None
+
+    def execute(self, sql, params=None):
+        self._lastrowid = None
+        self._rows = []
+        self._columns = []
+        statement = sql.strip() if sql else ""
+        if statement.upper().startswith(tuple(_SKIP_PREFIXES)):
+            # BEGIN/COMMIT/PRAGMA：pg8000 自动管理事务与连接属性
+            return self
+        if params is None:
+            self._cursor.execute(statement)
+        else:
+            self._cursor.execute(statement, params)
+        if " RETURNING " in statement.upper():
+            names = [item[0] for item in (self._cursor.description or [])]
+            self._columns = names
+            self._rows = [list(row) for row in self._cursor.fetchall() or []]
+            if self._rows:
+                self._lastrowid = self._rows[0][0]
+        return self
+
+    def executemany(self, sql, seq_of_params):
+        for params in seq_of_params:
+            self.execute(sql, params)
+        return self
+
+    def _wrap(self, row):
+        return PostgresRow(row, self._columns)
+
+    def fetchone(self):
+        if self._rows:
+            return self._wrap(self._rows.pop(0))
+        row = self._cursor.fetchone()
+        if row is None:
+            return None
+        return self._wrap(row)
+
+    def fetchall(self):
+        if self._rows:
+            rows = [self._wrap(row) for row in self._rows]
+            self._rows = []
+            return rows
+        names = [item[0] for item in (self._cursor.description or [])]
+        return [self._wrap(row) for row in self._cursor.fetchall()]
+
+    def fetchmany(self, size=None):
+        names = [item[0] for item in (self._cursor.description or [])]
+        if size is not None:
+            rows = self._cursor.fetchmany(size)
+        else:
+            rows = self._cursor.fetchall()
+        return [self._wrap(row) for row in rows]
+
+    @property
+    def description(self):
+        return self._cursor.description
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    @property
+    def lastrowid(self):
+        if self._lastrowid is not None:
+            return self._lastrowid
+        return getattr(self._cursor, "lastrowid", None)
+
+    def close(self):
+        return self._cursor.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._cursor.__exit__(exc_type, exc, tb)
+
+    def __iter__(self):
+        names = [item[0] for item in (self._cursor.description or [])]
+        for row in self._cursor:
+            yield PostgresRow(row, names)
+
+
+class TranslatedConnection:
+    """包装 pg8000 dbapi 连接：cursor() 返回适配游标，with 语义对齐 sqlite3。"""
+
+    def __init__(self, dbapi_connection, manager):
+        self._connection = dbapi_connection
+        self._manager = manager
+
+    def cursor(self):
+        return TranslatedCursor(self._connection.cursor(), self._manager)
+
+    def execute(self, sql, params=None):
+        return self.cursor().execute(sql, params)
+
+    def commit(self):
+        return self._connection.commit()
+
+    def rollback(self):
+        try:
+            return self._connection.rollback()
+        except Exception:
+            pass
+
+    def close(self):
+        return self._connection.close()
+
+    @property
+    def closed(self):
+        return bool(self._connection.closed)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self._connection.commit()
+        else:
+            self.rollback()
+        return False
+
+
+def _parse_dsn(dsn: str) -> dict:
+    """把 postgresql://user:pass@host:port/db 形式的连接串解析为连接参数。"""
+    from urllib.parse import unquote, urlsplit
+
+    parsed = urlsplit(dsn.strip())
+    if parsed.scheme not in ("postgres", "postgresql"):
+        raise ValueError("PostgreSQL 连接串必须以 postgresql:// 开头")
+    if not parsed.hostname:
+        raise ValueError("PostgreSQL 连接串缺少主机名")
+    return {
+        "user": unquote(parsed.username or "postgres"),
+        "password": unquote(parsed.password or ""),
+        "host": parsed.hostname,
+        "port": parsed.port or 5432,
+        "database": (parsed.path or "/").lstrip("/") or "fishing",
+    }
+
+
+class PostgresConnectionManager:
+    """与 DatabaseConnectionManager 同构的 PostgreSQL 连接管理器。
+
+    支持两种配置：dsn（postgresql:// 连接串）或 host/port/database/user/password
+    分项填写，均可通过插件配置自由添加多个数据库。
+    """
+
+    def __init__(self, pg_config: dict, timeout: int = 30, max_retries: int = 3, retry_delay: float = 0.2):
+        dsn = (pg_config.get("dsn") or "").strip()
+        if dsn:
+            fields = _parse_dsn(dsn)
+        else:
+            fields = {
+                "user": (pg_config.get("user") or "postgres").strip(),
+                "password": pg_config.get("password") or "",
+                "host": (pg_config.get("host") or "127.0.0.1").strip(),
+                "port": int(pg_config.get("port") or 5432),
+                "database": (pg_config.get("database") or "fishing").strip(),
+            }
+        self.timeout = int(pg_config.get("connect_timeout") or timeout)
+        self._connect_fields = fields
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self._local = threading.local()
+
+    def _raw_connect(self):
+        dbapi = require_pg8000_dbapi()
+        return dbapi.connect(
+            user=self._connect_fields["user"],
+            host=self._connect_fields["host"],
+            port=self._connect_fields["port"],
+            database=self._connect_fields["database"],
+            password=self._connect_fields["password"],
+            timeout=self.timeout,
+        )
+
+    def _get_connection(self) -> TranslatedConnection:
+        conn = getattr(self._local, "connection", None)
+        if conn is None or conn.closed:
+            conn = TranslatedConnection(self._raw_connect(), self)
+            self._local.connection = conn
+        return conn
+
+    def connection(self) -> TranslatedConnection:
+        return self._get_connection()
+
+    def close_connection(self):
+        conn = getattr(self._local, "connection", None)
+        if conn is None:
+            return
+        conn.rollback()
+        try:
+            conn.close()
+        except Exception:
+            pass
+        finally:
+            delattr(self._local, "connection")
+
+    def _discard_connection(self):
+        conn = getattr(self._local, "connection", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            delattr(self._local, "connection")
+
+    def _is_retryable(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        return any(marker in message for marker in _RETRYABLE_MARKERS)
+
+    @contextmanager
+    def get_connection(self):
+        """上下文管理器：异常时回滚（对齐 sqlite 管理器行为）。"""
+        conn = self._get_connection()
+        try:
+            yield conn
+        except Exception:
+            conn.rollback()
+            raise
+
+    @contextmanager
+    def transaction(self, immediate: bool = True):
+        """在单个写事务内执行多条语句；pg8000 自动开事务。"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            yield cursor
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
+    def run_in_transaction(self, operation, immediate: bool = True):
+        """执行 operation(cursor)，遇可重试错误整体回滚后重放。"""
+        for attempt in range(self.max_retries + 1):
+            try:
+                with self.transaction(immediate=immediate) as cursor:
+                    return operation(cursor)
+            except Exception as exc:
+                self._get_connection().rollback()
+                if not self._is_retryable(exc) or attempt >= self.max_retries:
+                    self._discard_connection()
+                    raise
+                delay = self.retry_delay * (attempt + 1)
+                logger.warning(
+                    "PG 事务冲突，第 %s/%s 次重试，等待 %.2fs: %s",
+                    attempt + 1, self.max_retries, delay, exc,
+                )
+                time.sleep(delay)
+
+    def execute_with_retry(self, query: str, params: tuple = (), fetch: str = "none"):
+        if fetch not in _EXECUTE_MODES:
+            raise ValueError("不支持的 fetch 类型: %r" % fetch)
+        for attempt in range(self.max_retries + 1):
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            try:
+                cursor.execute(query, params)
+                result = None
+                if fetch == "one":
+                    result = cursor.fetchone()
+                elif fetch == "all":
+                    result = cursor.fetchall()
+                conn.commit()
+                return result
+            except Exception as exc:
+                conn.rollback()
+                if not self._is_retryable(exc) or attempt >= self.max_retries:
+                    self._discard_connection()
+                    raise
+                time.sleep(self.retry_delay * (attempt + 1))
+
+
+# ---------------------------------------------------------------------------
+# 数据迁移：SQLite → PostgreSQL 导出脚本
+# ---------------------------------------------------------------------------
+
+def export_sqlite_data_to_postgres_sql(sqlite_path: str, output_path: str) -> dict:
+    """把本地 SQLite 库的业务数据导出为可在 PG 执行的 INSERT 脚本。
+
+    数据行来自 sqlite3.iterdump()（官方转义），仅保留白名单业务表；
+    输出文件写入插件数据目录，由部署者以 psql -f 执行完成导入
+    （结构建库使用插件自带的 postgres_schema.sql）。
+    """
+    from . import postgres_schema
+
+    allowed = set(postgres_schema.TABLE_NAMES)
+    source = sqlite3.connect(sqlite_path)
+    statements = []
+    try:
+        for line in source.iterdump():
+            match = _DUMP_INSERT_RE.match(line.strip())
+            if not match:
+                continue
+            if match.group(1) in allowed:
+                statements.append(line.strip())
+    finally:
+        source.close()
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(output_path), prefix="postgres_data_", suffix=".sql.tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("-- 由 astrbot_plugin_fishing 生成的迁移数据（SQLite → PostgreSQL）\n")
+            handle.write("-- 前置条件：已先执行 postgres_schema.sql 建库\n")
+            handle.write("-- 执行方式：psql -f 本文件\n\n")
+            handle.write("BEGIN;\n\n")
+            for statement in statements:
+                handle.write(statement)
+                handle.write("\n")
+            handle.write("\nCOMMIT;\n")
+        os.replace(tmp_path, output_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    logger.info(
+        "SQLite 数据已导出 %s 条 INSERT 到 %s，请以 psql -f 执行完成迁移",
+        len(statements), output_path,
+    )
+    return {"statements": len(statements), "output": output_path}

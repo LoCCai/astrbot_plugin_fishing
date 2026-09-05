@@ -124,6 +124,41 @@ class FishingPlugin(Star):
 
         db_path = os.path.join(self.data_dir, "fish.db")
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
+        # --- 1.1.1. 数据库后端选择（sqlite / postgres）---
+        # postgres 后端通过可选注入把同一个仓储层切到 pg8000（qmark 参数风格）；
+        # 初始化失败时自动回退 SQLite 并保留原数据不动。
+        db_config = config.get("database", {})
+        self.db_backend = (db_config.get("backend") or "sqlite").strip().lower()
+        self.pg_manager = None
+        if self.db_backend == "postgres":
+            try:
+                from .core.database.postgres_backend import (
+                    PostgresConnectionManager,
+                    initialize_postgres_backend,
+                )
+
+                self.pg_manager = PostgresConnectionManager(
+                    {
+                        "dsn": db_config.get("pg_dsn"),
+                        "host": db_config.get("pg_host", "127.0.0.1"),
+                        "port": db_config.get("pg_port", 5432),
+                        "database": db_config.get("pg_database", "fishing"),
+                        "user": db_config.get("pg_user", "postgres"),
+                        "password": db_config.get("pg_password", ""),
+                        "connect_timeout": db_config.get("pg_connect_timeout", 10),
+                    }
+                )
+                initialize_postgres_backend(
+                    self.pg_manager,
+                    db_path,
+                    self.data_dir,
+                    migrate_from_sqlite=bool(db_config.get("migrate_from_sqlite", False)),
+                )
+                logger.info("数据库后端：PostgreSQL")
+            except Exception as e:
+                logger.error(f"PostgreSQL 后端初始化失败，回退 SQLite：{e}")
+                self.pg_manager = None
         
         # --- 1.2. 配置数据完整性检查注释 ---
         # 以下配置项必须在此处从 AstrBotConfig 中提取并放入 game_config，
@@ -269,22 +304,23 @@ class FishingPlugin(Star):
         migrations_path = os.path.join(plugin_root_dir, "core", "database", "migrations")
         run_migrations(db_path, migrations_path)
 
-        # --- 2. 组合根：实例化所有仓储层 ---
-        self.user_repo = SqliteUserRepository(db_path)
-        self.item_template_repo = SqliteItemTemplateRepository(db_path)
-        self.inventory_repo = SqliteInventoryRepository(db_path)
-        self.gacha_repo = SqliteGachaRepository(db_path)
-        self.market_repo = SqliteMarketRepository(db_path)
-        self.shop_repo = SqliteShopRepository(db_path)
+        # --- 2. 组合根：实例化所有仓储层（pg_manager=None 时走 SQLite）---
+        self.user_repo = SqliteUserRepository(db_path, connection_manager=self.pg_manager)
+        self.item_template_repo = SqliteItemTemplateRepository(db_path, connection_manager=self.pg_manager)
+        self.inventory_repo = SqliteInventoryRepository(db_path, connection_manager=self.pg_manager)
+        self.gacha_repo = SqliteGachaRepository(db_path, connection_manager=self.pg_manager)
+        self.market_repo = SqliteMarketRepository(db_path, connection_manager=self.pg_manager)
+        self.shop_repo = SqliteShopRepository(db_path, connection_manager=self.pg_manager)
         self.log_repo = SqliteLogRepository(
             db_path,
             tax_record_retention_days=self.game_config["tax"].get("tax_record_retention_days", 90),
             tax_record_cleanup_batch_size=self.game_config["tax"].get("tax_record_cleanup_batch_size", 1000),
+            connection_manager=self.pg_manager,
         )
-        self.achievement_repo = SqliteAchievementRepository(db_path)
-        self.buff_repo = SqliteUserBuffRepository(db_path)
-        self.exchange_repo = SqliteExchangeRepository(db_path)
-        self.bank_repo = SqliteBankRepository(db_path)
+        self.achievement_repo = SqliteAchievementRepository(db_path, connection_manager=self.pg_manager)
+        self.buff_repo = SqliteUserBuffRepository(db_path, connection_manager=self.pg_manager)
+        self.exchange_repo = SqliteExchangeRepository(db_path, connection_manager=self.pg_manager)
+        self.bank_repo = SqliteBankRepository(db_path, connection_manager=self.pg_manager)
 
         # --- 3. 组合根：实例化所有服务层，并注入依赖 ---
         # 3.1 核心服务必须在效果管理器之前实例化，以解决依赖问题
@@ -359,11 +395,11 @@ class FishingPlugin(Star):
         self.slot_service.set_gambling_record_callback(self.blackjack_service._add_gambling_record)
         
         # 初始化红包服务
-        self.red_packet_repo = SqliteRedPacketRepository(db_path)
+        self.red_packet_repo = SqliteRedPacketRepository(db_path, connection_manager=self.pg_manager)
         self.red_packet_service = RedPacketService(self.red_packet_repo, self.user_repo)
-        
+
         # 初始化借贷服务
-        self.loan_repo = SqliteLoanRepository(db_path)
+        self.loan_repo = SqliteLoanRepository(db_path, connection_manager=self.pg_manager)
         self.loan_service = LoanService(
             self.loan_repo, 
             self.user_repo,
