@@ -1,7 +1,7 @@
 import os
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.core.message.components import At
-from ..utils import to_percentage, format_accessory_or_rod, format_rarity_display, parse_amount
+from ..utils import to_percentage, format_accessory_or_rod, format_rarity_display, parse_amount, inventory_list_results
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -47,22 +47,22 @@ async def user_backpack(plugin: "FishingPlugin", event: AstrMessageEvent):
             if backpack_data.get('is_truncated', False):
                 filter_info = []
                 if backpack_data.get('rods_filtered', False):
-                    filter_info.append(f"鱼竿：仅显示5星以上 ({backpack_data['displayed_rods']}/{backpack_data['total_rods']})")
+                    filter_info.append(f"鱼竿预览 ({backpack_data['displayed_rods']}/{backpack_data['total_rods']})")
                 if backpack_data.get('accessories_filtered', False):
-                    filter_info.append(f"饰品：仅显示5星以上 ({backpack_data['displayed_accessories']}/{backpack_data['total_accessories']})")
+                    filter_info.append(f"饰品预览 ({backpack_data['displayed_accessories']}/{backpack_data['total_accessories']})")
                 
                 filter_text = "\n".join([f"• {info}" for info in filter_info]) if filter_info else ""
                 
                 yield event.plain_result(
-                    f"💡 提示：由于物品过多，已自动过滤显示内容。\n"
+                    f"💡 背包图片展示部分预览，分类命令可查看完整清单。\n"
                     f"{filter_text}\n\n"
                     "🧹 建议及时清理背包：\n"
                     "• /出售所有鱼竿 - 快速清理鱼竿\n"
                     "• /出售所有饰品 - 快速清理饰品\n"
                     "• /出售 [ID] - 出售指定装备\n\n"
                     "📝 使用分类命令查看完整列表：\n"
-                    "• /鱼竿 - 查看所有鱼竿（自动过滤）\n"
-                    "• /饰品 - 查看所有饰品（自动过滤）\n"
+                    "• /鱼竿 - 查看全部鱼竿，长列表合并转发\n"
+                    "• /饰品 - 查看全部饰品，长列表合并转发\n"
                     "• /鱼饵 - 查看所有鱼饵\n"
                     "• /道具 - 查看所有道具"
                 )
@@ -87,41 +87,30 @@ async def user_backpack(plugin: "FishingPlugin", event: AstrMessageEvent):
         yield event.plain_result("❌ 您还没有注册，请先使用 /注册 命令注册。")
 
 
+def _pond_results(event, title, pond_fish):
+    entries = []
+    fishes = sorted(pond_fish["fishes"], key=lambda fish: fish.get("rarity", 0), reverse=True)
+    for fish in fishes:
+        fish_id = int(fish.get("fish_id", 0) or 0)
+        high_quality = fish.get("quality_level", 0) == 1
+        fcode = f"F{fish_id}" + ("H" if high_quality else "")
+        quality = " ✨高品质" if high_quality else ""
+        value = fish.get("actual_value", fish.get("base_value", 0))
+        entries.append(
+            f"{format_rarity_display(fish.get('rarity', 0))} {fish['name']}{quality}"
+            f" × {fish['quantity']}（{value}金币 / 个） ID: {fcode}\n"
+        )
+    stats = pond_fish["stats"]
+    summary = f"🐟 总鱼数：{stats['total_count']} 条\n💰 总价值：{stats['total_value']} 金币"
+    return inventory_list_results(event, title, entries, summary)
+
+
 async def pond(plugin: "FishingPlugin", event: AstrMessageEvent):
     """查看用户鱼塘内的鱼"""
     user_id = plugin._get_effective_user_id(event)
     if pond_fish := plugin.inventory_service.get_user_fish_pond(user_id):
-        fishes = pond_fish["fishes"]
-        # 把fishes按稀有度分组
-        fished_by_rarity = {}
-        for fish in fishes:
-            rarity = fish.get("rarity", "未知")
-            if rarity not in fished_by_rarity:
-                fished_by_rarity[rarity] = []
-            fished_by_rarity[rarity].append(fish)
-        # 构造输出信息
-        message = "【🐠 鱼塘】：\n"
-
-        for rarity in sorted(fished_by_rarity.keys(), reverse=True):
-            fish_list = fished_by_rarity[rarity]
-            if fish_list:
-                message += f"\n {format_rarity_display(rarity)}：\n"
-                for fish in fish_list:
-                    fish_id = int(fish.get("fish_id", 0) or 0)
-                    quality_level = fish.get('quality_level', 0)
-                    # 生成带品质标识的FID
-                    if quality_level == 1:
-                        fcode = f"F{fish_id}H" if fish_id else "F0H"  # H代表✨高品质
-                    else:
-                        fcode = f"F{fish_id}" if fish_id else "F0"   # 普通品质
-                    # 显示品质信息
-                    quality_display = ""
-                    if quality_level == 1:
-                        quality_display = " ✨高品质"
-                    message += f"  - {fish['name']}{quality_display} x  {fish['quantity']} （{fish['actual_value']}金币 / 个） ID: {fcode}\n"
-        message += f"\n🐟 总鱼数：{pond_fish['stats']['total_count']} 条\n"
-        message += f"💰 总价值：{pond_fish['stats']['total_value']} 金币\n"
-        yield event.plain_result(message)
+        for result in _pond_results(event, "【🐠 鱼塘】", pond_fish):
+            yield result
     else:
         yield event.plain_result("🐟 您的鱼塘是空的，快去钓鱼吧！")
 
@@ -165,39 +154,8 @@ async def peek_pond(plugin: "FishingPlugin", event: AstrMessageEvent):
 
     # 获取目标用户的鱼塘信息
     if pond_fish := plugin.inventory_service.get_user_fish_pond(target_user_id):
-        fishes = pond_fish["fishes"]
-        # 把fishes按稀有度分组
-        fished_by_rarity = {}
-        for fish in fishes:
-            rarity = fish.get("rarity", "未知")
-            if rarity not in fished_by_rarity:
-                fished_by_rarity[rarity] = []
-            fished_by_rarity[rarity].append(fish)
-
-        # 构造输出信息
-        message = f"【🔍 偷看 {target_user.nickname} 的鱼塘】：\n"
-
-        for rarity in sorted(fished_by_rarity.keys(), reverse=True):
-            fish_list = fished_by_rarity[rarity]
-            if fish_list:
-                message += f"\n {format_rarity_display(rarity)} 稀有度 {rarity}：\n"
-                for fish in fish_list:
-                    fish_id = int(fish.get("fish_id", 0) or 0)
-                    quality_level = fish.get('quality_level', 0)
-                    # 生成带品质标识的FID
-                    if quality_level == 1:
-                        fcode = f"F{fish_id}H" if fish_id else "F0H"  # H代表✨高品质
-                    else:
-                        fcode = f"F{fish_id}" if fish_id else "F0"   # 普通品质
-                    # 显示品质信息
-                    quality_display = ""
-                    if quality_level == 1:
-                        quality_display = " ✨高品质"
-                    actual_value = fish.get('actual_value', fish.get('base_value', 0))
-                    message += f"  - {fish['name']}{quality_display} x  {fish['quantity']} （{actual_value}金币 / 个） ID: {fcode}\n"
-        message += f"\n🐟 总鱼数：{pond_fish['stats']['total_count']} 条\n"
-        message += f"💰 总价值：{pond_fish['stats']['total_value']} 金币\n"
-        yield event.plain_result(message)
+        for result in _pond_results(event, f"【🔍 {target_user.nickname} 的鱼塘】", pond_fish):
+            yield result
     else:
         yield event.plain_result(f"🐟 {target_user.nickname} 的鱼塘是空的！")
 
@@ -233,53 +191,18 @@ async def rod(plugin: "FishingPlugin", event: AstrMessageEvent):
         all_rods = rod_info["rods"]
         total_count = len(all_rods)
         
-        # 智能过滤：鱼竿过多时只显示5星以上
-        rods = all_rods
-        is_filtered = False
-        
-        if total_count > 30:
-            high_rarity_rods = [r for r in all_rods if r.get('rarity', 1) >= 5]
-            if len(high_rarity_rods) > 0:
-                # 即使5星以上也限制最多100项
-                rods = high_rarity_rods[:100]
-                is_filtered = True
-            else:
-                # 如果没有5星以上，按稀有度排序取前50个
-                rods = sorted(all_rods, key=lambda x: x.get('rarity', 1), reverse=True)[:50]
-                is_filtered = True
-        
-        displayed_count = len(rods)
-
-        # 构造输出信息,附带emoji
-        if is_filtered:
-            message = f"【🎣 鱼竿】共 {total_count} 根，仅显示高品质鱼竿 {displayed_count} 根：\n"
-            message += "💡 提示：数量过多，仅显示5星以上鱼竿\n\n"
-        else:
-            message = f"【🎣 鱼竿】共 {total_count} 根：\n"
-        
-        for rod in rods:
-            message += format_accessory_or_rod(rod)
+        entries = []
+        for rod in sorted(all_rods, key=lambda item: item.get('rarity', 1), reverse=True):
+            message = format_accessory_or_rod(rod)
             if (
                 rod.get("bonus_rare_fish_chance", 1) != 1
                 and rod.get("bonus_fish_weight", 1.0) != 1.0
             ):
                 message += f"   - 钓上鱼鱼类几率加成: {to_percentage(rod['bonus_rare_fish_chance'])}\n"
             message += f"   -精炼等级: {rod.get('refine_level', 1)}\n"
-
-        # 检查消息长度，如果太长则截断
-        if len(message) > 3000:
-            message = (
-                message[:3000]
-                + "\n\n📝 消息过长已截断。"
-            )
-        
-        # 如果被过滤，添加清理建议
-        if is_filtered:
-            message += "\n\n🧹 建议及时清理低品质鱼竿：\n"
-            message += "• /出售所有鱼竿 - 快速清理低品质鱼竿\n"
-            message += "• /出售 [鱼竿ID] - 出售指定鱼竿"
-
-        yield event.plain_result(message)
+            entries.append(message)
+        for result in inventory_list_results(event, f"【🎣 鱼竿】共 {total_count} 根", entries):
+            yield result
     else:
         yield event.plain_result("🎣 您还没有鱼竿，快去商店购买或抽奖获得吧！")
 
@@ -289,19 +212,19 @@ async def bait(plugin: "FishingPlugin", event: AstrMessageEvent):
     user_id = plugin._get_effective_user_id(event)
     bait_info = plugin.inventory_service.get_user_bait_inventory(user_id)
     if bait_info and bait_info["baits"]:
-        # 构造输出信息,附带emoji
-        message = "【🐟 鱼饵】：\n"
-
+        entries = []
         for bait in bait_info["baits"]:
             bait_id = int(bait.get("bait_id", 0) or 0)
             bcode = f"B{bait_id}" if bait_id else "B0"
-            message += f" - {bait['name']} x {bait['quantity']} (稀有度: {format_rarity_display(bait['rarity'])}) ID: {bcode}\n"
+            message = f" - {bait['name']} x {bait['quantity']} (稀有度: {format_rarity_display(bait['rarity'])}) ID: {bcode}\n"
             if bait["duration_minutes"] > 0:
                 message += f"   - 持续时间: {bait['duration_minutes']} 分钟\n"
             if bait["effect_description"]:
                 message += f"   - 效果: {bait['effect_description']}\n"
             message += "\n"
-        yield event.plain_result(message)
+            entries.append(message)
+        for result in inventory_list_results(event, "【🐟 鱼饵】", entries):
+            yield result
     else:
         yield event.plain_result("🐟 您还没有鱼饵，快去商店购买或抽奖获得吧！")
 
@@ -311,16 +234,18 @@ async def items(plugin: "FishingPlugin", event: AstrMessageEvent):
     user_id = plugin._get_effective_user_id(event)
     item_info = plugin.inventory_service.get_user_item_inventory(user_id)
     if item_info and item_info.get("items"):
-        message = "【📦 道具】：\n"
+        entries = []
         for it in item_info["items"]:
             item_id = int(it.get("item_id", 0) or 0)
             dcode = f"D{item_id}" if item_id else "D0"
             consumable_text = "消耗品" if it.get("is_consumable") else "非消耗"
-            message += f" - {it['name']} x {it['quantity']} (稀有度: {format_rarity_display(it['rarity'])}，{consumable_text}) ID: {dcode}\n"
+            message = f" - {it['name']} x {it['quantity']} (稀有度: {format_rarity_display(it['rarity'])}，{consumable_text}) ID: {dcode}\n"
             if it.get("effect_description"):
                 message += f"   - 效果: {it['effect_description']}\n"
             message += "\n"
-        yield event.plain_result(message)
+            entries.append(message)
+        for result in inventory_list_results(event, "【📦 道具】", entries):
+            yield result
     else:
         yield event.plain_result("📦 您还没有道具。")
 
@@ -381,48 +306,13 @@ async def accessories(plugin: "FishingPlugin", event: AstrMessageEvent):
         all_accessories = accessories_info["accessories"]
         total_count = len(all_accessories)
         
-        # 智能过滤：饰品过多时只显示5星以上
-        accessories = all_accessories
-        is_filtered = False
-        
-        if total_count > 30:
-            high_rarity_accessories = [a for a in all_accessories if a.get('rarity', 1) >= 5]
-            if len(high_rarity_accessories) > 0:
-                # 即使5星以上也限制最多100项
-                accessories = high_rarity_accessories[:100]
-                is_filtered = True
-            else:
-                # 如果没有5星以上，按稀有度排序取前50个
-                accessories = sorted(all_accessories, key=lambda x: x.get('rarity', 1), reverse=True)[:50]
-                is_filtered = True
-        
-        displayed_count = len(accessories)
-
-        # 构造输出信息,附带emoji
-        if is_filtered:
-            message = f"【💍 饰品】共 {total_count} 个，仅显示高品质饰品 {displayed_count} 个：\n"
-            message += "💡 提示：数量过多，仅显示5星以上饰品\n\n"
-        else:
-            message = f"【💍 饰品】共 {total_count} 个：\n"
-        
-        for accessory in accessories:
-            message += format_accessory_or_rod(accessory)
+        entries = []
+        for accessory in sorted(all_accessories, key=lambda item: item.get('rarity', 1), reverse=True):
+            message = format_accessory_or_rod(accessory)
             message += f"   -精炼等级: {accessory.get('refine_level', 1)}\n"
-
-        # 检查消息长度，如果太长则截断
-        if len(message) > 3000:
-            message = (
-                message[:3000]
-                + "\n\n📝 消息过长已截断。"
-            )
-        
-        # 如果被过滤，添加清理建议
-        if is_filtered:
-            message += "\n\n🧹 建议及时清理低品质饰品：\n"
-            message += "• /出售所有饰品 - 快速清理低品质饰品\n"
-            message += "• /出售 [饰品ID] - 出售指定饰品"
-
-        yield event.plain_result(message)
+            entries.append(message)
+        for result in inventory_list_results(event, f"【💍 饰品】共 {total_count} 个", entries):
+            yield result
     else:
         yield event.plain_result("💍 您还没有饰品，快去商店购买或抽奖获得吧！")
 

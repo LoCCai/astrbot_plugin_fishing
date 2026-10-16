@@ -11,6 +11,37 @@ import asyncio
 
 from astrbot.api import logger
 
+
+def inventory_list_results(event, title: str, entries: list[str], summary: str = ""):
+    """短清单直接回复，长清单按完整条目拆为合并转发。"""
+    chunks = []
+    current = ""
+    for entry in entries:
+        if len(current) + len(entry) > 1500 and current:
+            chunks.append(current.rstrip())
+            current = ""
+        # 单件物品的说明也可能很长，保留全部内容而不截断。
+        while len(entry) > 1500:
+            end = entry.rfind("\n", 0, 1500)
+            end = end + 1 if end > 0 else 1500
+            chunks.append(entry[:end].rstrip())
+            entry = entry[end:]
+        current += entry
+    if current:
+        chunks.append(current.rstrip())
+    header = title + "\n" + (summary + "\n" if summary else "")
+    if len(chunks) <= 1:
+        return [event.plain_result(header + (chunks[0] if chunks else ""))]
+
+    from astrbot.api.message_components import Node, Nodes, Plain
+
+    nodes = [Node(uin=event.get_self_id(), name="钓鱼物品清单",
+                  content=[Plain(f"{header}第 {index}/{len(chunks)} 段\n{text}")])
+             for index, text in enumerate(chunks, 1)]
+    return [event.chain_result([Nodes(nodes[offset:offset + 80])])
+            for offset in range(0, len(nodes), 80)]
+
+
 async def get_local_ip():
     """异步获取内网IPv4地址"""
     try:

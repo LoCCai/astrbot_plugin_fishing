@@ -8,15 +8,14 @@
 
 <div style="background: linear-gradient(135deg, #0ea5e9 0%,#86a4f8 100%); padding: 20px; border-radius: 15px; margin: 20px 0; box-shadow: 0 8px 32px hsla(199, 94.70%, 62.70%, 0.89);">
 
-### ⚙️ **v2.6.7 容量升级独立化 + Web 设置归位**
+### 🎒 **v2.6.8 完整物品清单 + 星级回收**
 
-🎯 **鱼塘、水族箱和玩法参数都能在对应后台页面安全修改并实时生效！**
+🎯 **完整查看所有星级的物品，按星级回收同类型装备！**
 
-🐠 **双容量档位** - 鱼塘与水族箱均可编辑容量、金币、钻石和说明<br>
-🖥️ **按系统归位** - 银行、交易所、市场规则进入各自页面，其余参数集中到“其他设置”<br>
-⚡ **实时生效** - 保存后直接更新运行时配置，同时持久化到插件配置<br>
-🛡️ **玩家保护** - 保持已有等级；缩容装不下或删除在用等级时整次拒绝<br>
-↩️ **安全恢复** - 两套容量档位都可一键恢复版本默认值<br>
+🎒 **完整清单** - 鱼竿、饰品不再隐藏低星物品；鱼塘、鱼饵和道具长列表也改为合并转发<br>
+♻️ **星级回收** - 鱼竿和饰品分别匹配星级，同星不同名称可抵扣，不能跨类型混用<br>
+🛡️ **装备保护** - 跳过锁定和正在装备的物品，优先消耗低精炼装备<br>
+🖥️ **后台同步** - 回收条件按星级选择，库存支持搜索、星级与状态筛选、分页<br>
 
 
 </div>
@@ -28,7 +27,7 @@
 [![AGPL-3.0 License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://opensource.org/licenses/AGPL-3.0)
 [![Python](https://img.shields.io/badge/Python-3.8+-green.svg)](https://python.org)
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-orange.svg)](https://github.com/astrbot/astrbot)
-[![Version](https://img.shields.io/badge/Version-2.6.7-brightgreen.svg)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-2.6.8-brightgreen.svg)](./CHANGELOG.md)
 [![Major Update](https://img.shields.io/badge/Major-Update-red.svg)](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/releases/tag/v2.0.0)
 
 ## ✨ 功能特点
@@ -107,6 +106,16 @@
 如果您有功能建议或发现问题，欢迎在 [Issues](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/issues) 中提出！
 
 ## 📦 更新记录
+
+#### 🎒 **v2.6.8 完整物品清单 + 星级回收**
+
+- 鱼竿、饰品分类命令展示全部星级；鱼塘、偷看鱼塘、鱼饵和道具长清单按条目分段合并转发，不再截断
+- 背包图片保留分类预览，显示实际预览数量，并提示用分类命令查看完整清单
+- 商店装备回收条件按类型和星级匹配，支持同星不同名称，鱼竿与饰品不能混用
+- 回收跳过锁定和正在装备的物品，优先消耗低精炼装备；同星多项条件合并计数，材料不足时拒绝交易
+- Web 同步星级回收条件及旧商品编辑回显；库存页增加搜索、星级与保护状态筛选，每页显示 25 条
+
+---
 
 #### ⚙️ **v2.6.7 容量升级独立化 + Web 配置归位与实时生效**
 

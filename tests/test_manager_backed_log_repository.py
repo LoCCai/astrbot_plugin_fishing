@@ -124,12 +124,12 @@ class ManagerBackedLogRepositoryTests(unittest.TestCase):
             fish_id=1,
             weight=20,
             value=30,
-            timestamp=datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc),
+            timestamp=datetime.now(timezone.utc),
             is_king_size=True,
         )
 
     def test_all_log_writes_use_replayed_transactions(self):
-        now = datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
         gacha_record = self.models.GachaRecord(
             record_id=None,
             user_id="u1",
@@ -166,7 +166,7 @@ class ManagerBackedLogRepositoryTests(unittest.TestCase):
             self.assertTrue(self.repo.add_fishing_record(self._fishing_record()))
             self.repo.add_gacha_record(gacha_record)
             self.repo.add_wipe_bomb_log(wipe_log)
-            self.repo.add_check_in("u1", date(2026, 8, 29))
+            self.repo.add_check_in("u1", now.date())
             self.repo.add_log("u1", "test", "message")
             self.repo.add_tax_record(tax_record)
             self.assertEqual(
@@ -179,7 +179,7 @@ class ManagerBackedLogRepositoryTests(unittest.TestCase):
         self.assertEqual(self.repo.get_user_fish_stat("u1", 1).total_caught, 1)
         self.assertEqual(len(self.repo.get_gacha_records("u1", 10)), 1)
         self.assertEqual(len(self.repo.get_wipe_bomb_logs("u1", 10)), 2)
-        self.assertTrue(self.repo.has_checked_in("u1", date(2026, 8, 29)))
+        self.assertTrue(self.repo.has_checked_in("u1", now.date()))
         self.assertEqual(len(self.repo.get_tax_records("u1", 10)), 1)
         self.assertEqual(
             self.repo._conn_mgr.detect_types, sqlite3.PARSE_DECLTYPES

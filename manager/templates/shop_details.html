@@ -52,9 +52,9 @@
                                     {% elif cost.cost_type == 'item' %}
                                         🎁 {{ cost.item_name or ('道具#' + cost.cost_item_id|string) }} x{{ cost.cost_amount }}
                                     {% elif cost.cost_type == 'rod' %}
-                                        🎣 {{ cost.rod_name or ('鱼竿#' + cost.cost_item_id|string) }} x{{ cost.cost_amount }}
+                                        🎣 {{ cost.equipment_rarity|string + '星鱼竿（任意名称）' if cost.equipment_rarity is not none else '无效鱼竿条件' }} x{{ cost.cost_amount }}
                                     {% elif cost.cost_type == 'accessory' %}
-                                        💍 {{ cost.accessory_name or ('饰品#' + cost.cost_item_id|string) }} x{{ cost.cost_amount }}
+                                        💍 {{ cost.equipment_rarity|string + '星饰品（任意名称）' if cost.equipment_rarity is not none else '无效饰品条件' }} x{{ cost.cost_amount }}
                                     {% else %}
                                         {{ cost.cost_type }} x{{ cost.cost_amount }}
                                     {% endif %}
@@ -198,6 +198,7 @@
                     <!-- 消耗设置 -->
                     <div class="mb-3">
                         <label class="form-label">消耗设置</label>
+                        <div class="form-text mb-2">鱼竿、饰品分别按星级匹配，可使用同星级的不同名称装备；跳过锁定和正在装备的物品，优先消耗低精炼装备。</div>
                         <div id="costs-list">
                             <div class="row g-2 mb-2">
                                 <div class="col-12 col-lg-4">
@@ -211,10 +212,10 @@
                                             {% for fish in all_fish %}<option value="fish-{{ fish.fish_id }}">{{ fish.name }} {{ '★' * fish.rarity }}</option>{% endfor %}
                                         </optgroup>
                                         <optgroup label="鱼竿">
-                                            {% for rod in all_rods %}<option value="rod-{{ rod.rod_id }}">{{ rod.name }} {{ '★' * rod.rarity }}</option>{% endfor %}
+                                            {% for rarity, rods in all_rods|groupby('rarity') %}<option value="rod-{{ rods[0].rod_id }}" data-rarity="{{ rarity }}">{{ rarity }}星鱼竿（任意名称）</option>{% endfor %}
                                         </optgroup>
                                         <optgroup label="饰品">
-                                            {% for accessory in all_accessories %}<option value="accessory-{{ accessory.accessory_id }}">{{ accessory.name }} {{ '★' * accessory.rarity }}</option>{% endfor %}
+                                            {% for rarity, accessories in all_accessories|groupby('rarity') %}<option value="accessory-{{ accessories[0].accessory_id }}" data-rarity="{{ rarity }}">{{ rarity }}星饰品（任意名称）</option>{% endfor %}
                                         </optgroup>
                                         <optgroup label="道具">
                                             {% for item in all_items %}<option value="item-{{ item.item_id }}">{{ item.name }} {{ '★' * item.rarity }}</option>{% endfor %}
@@ -429,6 +430,17 @@ document.addEventListener('DOMContentLoaded', function () {
                             select.value = `fish-${cost.cost_item_id}`;
                         } else if (cost.cost_type === 'item') {
                             select.value = `item-${cost.cost_item_id}`;
+                        } else if (cost.cost_type === 'rod' || cost.cost_type === 'accessory') {
+                            const option = Array.from(select.options).find(option =>
+                                option.value.startsWith(`${cost.cost_type}-`) &&
+                                option.dataset.rarity === String(cost.equipment_rarity));
+                            if (option) {
+                                select.value = option.value;
+                            } else {
+                                const missing = new Option('无效装备条件，请重新选择星级', `${cost.cost_type}-${cost.cost_item_id}`);
+                                select.add(missing);
+                                select.value = missing.value;
+                            }
                         }
                         
                         if (amountInput) {
@@ -628,10 +640,10 @@ document.addEventListener('DOMContentLoaded', function () {
                         {% for fish in all_fish %}<option value="fish-{{ fish.fish_id }}">{{ fish.name }} {{ '★' * fish.rarity }}</option>{% endfor %}
                     </optgroup>
                     <optgroup label="鱼竿">
-                        {% for rod in all_rods %}<option value="rod-{{ rod.rod_id }}">{{ rod.name }} {{ '★' * rod.rarity }}</option>{% endfor %}
+                        {% for rarity, rods in all_rods|groupby('rarity') %}<option value="rod-{{ rods[0].rod_id }}" data-rarity="{{ rarity }}">{{ rarity }}星鱼竿（任意名称）</option>{% endfor %}
                     </optgroup>
                     <optgroup label="饰品">
-                        {% for accessory in all_accessories %}<option value="accessory-{{ accessory.accessory_id }}">{{ accessory.name }} {{ '★' * accessory.rarity }}</option>{% endfor %}
+                        {% for rarity, accessories in all_accessories|groupby('rarity') %}<option value="accessory-{{ accessories[0].accessory_id }}" data-rarity="{{ rarity }}">{{ rarity }}星饰品（任意名称）</option>{% endfor %}
                     </optgroup>
                     <optgroup label="道具">
                         {% for item in all_items %}<option value="item-{{ item.item_id }}">{{ item.name }} {{ '★' * item.rarity }}</option>{% endfor %}

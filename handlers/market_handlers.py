@@ -333,23 +333,22 @@ async def shop(plugin: "FishingPlugin", event: AstrMessageEvent):
                         fish_name += " ✨高品质"
                     cost_text = f"🐟 {fish_name} x{c['cost_amount']}"
                 elif c["cost_type"] == "rod":
-                    # 获取鱼竿名称
+                    # 装备成本按同类型、同星级匹配
                     rod_template = plugin.item_template_repo.get_rod_by_id(
                         c.get("cost_item_id")
                     )
                     rod_name = (
-                        rod_template.name
+                        f"{rod_template.rarity}星鱼竿（任意名称）"
                         if rod_template
                         else f"鱼竿#{c.get('cost_item_id')}"
                     )
                     cost_text = f"🎣 {rod_name} x{c['cost_amount']}"
                 elif c["cost_type"] == "accessory":
-                    # 获取饰品名称
                     accessory_template = plugin.item_template_repo.get_accessory_by_id(
                         c.get("cost_item_id")
                     )
                     accessory_name = (
-                        accessory_template.name
+                        f"{accessory_template.rarity}星饰品（任意名称）"
                         if accessory_template
                         else f"饰品#{c.get('cost_item_id')}"
                     )

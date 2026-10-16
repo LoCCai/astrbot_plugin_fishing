@@ -10,7 +10,59 @@ document.addEventListener('DOMContentLoaded', function() {
     // 恢复并监听标签状态
     restoreActiveTab();
     attachTabPersistence();
+    initializeInventoryLists();
 });
+
+function initializeInventoryLists() {
+    document.querySelectorAll('#inventoryTabsContent table').forEach(table => {
+        const rows = Array.from(table.querySelectorAll('tbody tr[data-rarity]'));
+        if (!rows.length) return;
+        const toolbar = document.createElement('div');
+        toolbar.className = 'd-flex flex-wrap gap-2 mb-3';
+        toolbar.innerHTML = `
+            <input type="search" class="form-control w-auto" placeholder="搜索名称或ID" aria-label="搜索物品">
+            <select class="form-select w-auto" aria-label="筛选星级"><option value="">全部星级</option></select>
+            <select class="form-select w-auto" aria-label="筛选装备状态">
+                <option value="">全部状态</option><option value="available">可回收（未锁定、未装备）</option>
+                <option value="locked">已锁定</option><option value="equipped">已装备</option>
+            </select>`;
+        const [raritySelect, stateSelect] = toolbar.querySelectorAll('select');
+        const search = toolbar.querySelector('input');
+        const rarities = [...new Set(rows.map(row => row.dataset.rarity))].sort((a, b) => Number(a) - Number(b));
+        rarities.forEach(rarity => raritySelect.add(new Option(`${rarity}星`, rarity)));
+        stateSelect.hidden = !rows.some(row => 'locked' in row.dataset);
+        const pager = document.createElement('div');
+        pager.className = 'd-flex flex-wrap align-items-center gap-2 mt-3';
+        pager.innerHTML = '<button type="button" class="btn btn-outline-secondary btn-sm">上一页</button><span></span><button type="button" class="btn btn-outline-secondary btn-sm">下一页</button>';
+        const [previous, next] = pager.querySelectorAll('button');
+        const info = pager.querySelector('span');
+        const wrapper = table.closest('.table-responsive');
+        wrapper.before(toolbar);
+        wrapper.after(pager);
+        let page = 1;
+        const pageSize = 25;
+        function render() {
+            const query = search.value.trim().toLocaleLowerCase();
+            const matches = rows.filter(row =>
+                (!query || row.textContent.toLocaleLowerCase().includes(query)) &&
+                (!raritySelect.value || row.dataset.rarity === raritySelect.value) &&
+                (!stateSelect.value || (stateSelect.value === 'available'
+                    ? row.dataset.locked === '0' && row.dataset.equipped === '0'
+                    : row.dataset[stateSelect.value] === '1')));
+            const pages = Math.max(1, Math.ceil(matches.length / pageSize));
+            page = Math.min(page, pages);
+            rows.forEach(row => { row.hidden = true; });
+            matches.slice((page - 1) * pageSize, page * pageSize).forEach(row => { row.hidden = false; });
+            info.textContent = `第 ${page}/${pages} 页 · 筛选 ${matches.length}/${rows.length} 条 · 每页 ${pageSize} 条`;
+            previous.disabled = page === 1;
+            next.disabled = page === pages;
+        }
+        [search, raritySelect, stateSelect].forEach(control => control.addEventListener('input', () => { page = 1; render(); }));
+        previous.addEventListener('click', () => { page--; render(); });
+        next.addEventListener('click', () => { page++; render(); });
+        render();
+    });
+}
 
 function initializeItemTypeSelector() {
     const itemTypeSelect = document.getElementById('itemType');

@@ -809,16 +809,16 @@ async def _draw_backpack_image_impl(user_data: Dict[str, Any], data_dir: str) ->
     if user_data.get('is_truncated', False):
         filter_parts = []
         if user_data.get('rods_filtered', False):
-            filter_parts.append(f"鱼竿:仅显示5星以上({user_data.get('displayed_rods', 0)}/{user_data.get('total_rods', 0)})")
+            filter_parts.append(f"鱼竿预览({user_data.get('displayed_rods', 0)}/{user_data.get('total_rods', 0)})")
         if user_data.get('accessories_filtered', False):
-            filter_parts.append(f"饰品:仅显示5星以上({user_data.get('displayed_accessories', 0)}/{user_data.get('total_accessories', 0)})")
+            filter_parts.append(f"饰品预览({user_data.get('displayed_accessories', 0)}/{user_data.get('total_accessories', 0)})")
         
         if filter_parts:
-            warning_text = f"⚠️ 物品过多已智能过滤 | {' | '.join(filter_parts)}"
+            warning_text = f"⚠️ 图片仅展示预览 | {' | '.join(filter_parts)}"
         else:
             warning_text = "⚠️ 物品过多，仅显示部分内容！"
         
-        warning_text += " | 建议及时清理背包"
+        warning_text += " | 分类命令查看完整清单"
         warning_w, warning_h = get_text_size(warning_text, small_font)
         warning_x = (width - warning_w) // 2
         draw.text((warning_x, current_y), warning_text, font=small_font, fill=warning_color)
@@ -856,9 +856,7 @@ async def _draw_backpack_image_impl(user_data: Dict[str, Any], data_dir: str) ->
 
 def get_user_backpack_data(inventory_service, user_id: str, max_items_per_category: int = 50) -> Dict[str, Any]:
     """
-    获取用户背包数据（带智能过滤）
-    
-    当装备数量过多时，自动过滤只显示5星以上装备，以提升性能和可读性
+    获取用户背包数据，图片按分类展示预览，完整清单由分类命令提供。
     
     Args:
         inventory_service: 库存服务
@@ -884,39 +882,10 @@ def get_user_backpack_data(inventory_service, user_id: str, max_items_per_catego
     item_result = inventory_service.get_user_item_inventory(user_id)
     all_items = item_result.get('items', []) if item_result.get('success') else []
     
-    # 智能过滤：装备过多时只显示5星以上
-    filtered_rods = all_rods
-    filtered_accessories = all_accessories
-    rods_filtered = False
-    accessories_filtered = False
-    
-    # 鱼竿过多时过滤
-    if len(all_rods) > 30:
-        high_rarity_rods = [r for r in all_rods if r.get('rarity', 1) >= 5]
-        if len(high_rarity_rods) > 0:
-            # 即使5星以上也限制最多100项
-            filtered_rods = high_rarity_rods[:min(100, max_items_per_category)]
-            rods_filtered = True
-        else:
-            # 如果没有5星以上，按稀有度排序取前N个
-            filtered_rods = sorted(all_rods, key=lambda x: x.get('rarity', 1), reverse=True)[:max_items_per_category]
-            rods_filtered = True
-    else:
-        filtered_rods = all_rods[:max_items_per_category]
-    
-    # 饰品过多时过滤
-    if len(all_accessories) > 30:
-        high_rarity_accessories = [a for a in all_accessories if a.get('rarity', 1) >= 5]
-        if len(high_rarity_accessories) > 0:
-            # 即使5星以上也限制最多100项
-            filtered_accessories = high_rarity_accessories[:min(100, max_items_per_category)]
-            accessories_filtered = True
-        else:
-            # 如果没有5星以上，按稀有度排序取前N个
-            filtered_accessories = sorted(all_accessories, key=lambda x: x.get('rarity', 1), reverse=True)[:max_items_per_category]
-            accessories_filtered = True
-    else:
-        filtered_accessories = all_accessories[:max_items_per_category]
+    filtered_rods = sorted(all_rods, key=lambda x: x.get('rarity', 1), reverse=True)[:max_items_per_category]
+    filtered_accessories = sorted(all_accessories, key=lambda x: x.get('rarity', 1), reverse=True)[:max_items_per_category]
+    rods_filtered = len(all_rods) > len(filtered_rods)
+    accessories_filtered = len(all_accessories) > len(filtered_accessories)
     
     # 鱼饵和道具仍使用数量限制
     filtered_baits = all_baits[:max_items_per_category]

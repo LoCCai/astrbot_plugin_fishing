@@ -32,6 +32,37 @@ class ShopService:
         self.shop_repo = shop_repo
         self.config = config or {}
 
+    def equipment_cost_rarity(self, cost: Dict[str, Any]) -> Optional[int]:
+        """装备成本沿用模板配置，匹配时使用该模板的星级。"""
+        cost_type = cost.get("cost_type")
+        if cost_type == "rod":
+            template = self.item_template_repo.get_rod_by_id(cost.get("cost_item_id"))
+        elif cost_type == "accessory":
+            template = self.item_template_repo.get_accessory_by_id(cost.get("cost_item_id"))
+        else:
+            return None
+        return template.rarity if template else None
+
+    def _available_equipment(self, user_id: str, category: str):
+        if category == "rods":
+            instances = self.inventory_repo.get_user_rod_instances(user_id)
+            template_id_attr = "rod_id"
+            get_template = self.item_template_repo.get_rod_by_id
+        else:
+            instances = self.inventory_repo.get_user_accessory_instances(user_id)
+            template_id_attr = "accessory_id"
+            get_template = self.item_template_repo.get_accessory_by_id
+        templates = {}
+        for instance in sorted(instances, key=lambda obj: obj.refine_level):
+            if instance.is_locked or instance.is_equipped:
+                continue
+            template_id = getattr(instance, template_id_attr)
+            if template_id not in templates:
+                templates[template_id] = get_template(template_id)
+            template = templates[template_id]
+            if template:
+                yield instance, template.rarity
+
     def _parse_datetime(self, dt_str: Optional[str]) -> Optional[datetime]:
         """解析时间字符串为 datetime 对象"""
         if not dt_str or not isinstance(dt_str, str):
@@ -133,6 +164,9 @@ class ShopService:
             
             # 获取成本和奖励
             costs = self.shop_repo.get_item_costs(item["item_id"])
+            for cost in costs:
+                if cost["cost_type"] in ("rod", "accessory"):
+                    cost["equipment_rarity"] = self.equipment_cost_rarity(cost)
             rewards = self.shop_repo.get_item_rewards(item["item_id"])
             
             items_with_details.append({
@@ -214,7 +248,10 @@ class ShopService:
         
         # 1. 解析成本结构
         costs_db = self.shop_repo.get_item_costs(item_id)
-        cost_structure = self._get_cost_structure(costs_db, quantity)
+        try:
+            cost_structure = self._get_cost_structure(costs_db, quantity)
+        except ValueError as exc:
+            return {"success": False, "message": str(exc)}
         and_costs = cost_structure["and_costs"]
         or_choices = cost_structure["or_choices"]
 
@@ -240,12 +277,15 @@ class ShopService:
             return {"success": False, "message": "支付条件不足，无法找到满足所有选项的物品组合"}
 
         # 5. 合并最终成本
-        final_total_costs = and_costs.copy()
+        final_total_costs = copy.deepcopy(and_costs)
         for cost_part in or_solution:
             self._merge_costs(final_total_costs, cost_part)
         
         # 6. 执行真实的交易
-        self._deduct_costs(user, final_total_costs)
+        try:
+            self._deduct_costs(user, final_total_costs)
+        except ValueError as exc:
+            return {"success": False, "message": str(exc)}
         rewards = self.shop_repo.get_item_rewards(item_id)
         obtained_items = self._give_rewards(user_id, rewards, quantity)
         
@@ -311,7 +351,12 @@ class ShopService:
             item_id = cost_item.get("cost_item_id")
             quality_level = cost_item.get("quality_level", 0)  # 获取品质等级
             plural_map = {"item": "items", "fish": "fish", "rod": "rods", "accessory": "accessories"}
-            if cost_type in ["coins", "premium"]:
+            if cost_type in ("rod", "accessory"):
+                rarity = self.equipment_cost_rarity(cost_item)
+                if rarity is None:
+                    raise ValueError("装备回收条件配置无效，请联系管理员检查商品")
+                return {plural_map[cost_type]: {rarity: amount}}
+            elif cost_type in ["coins", "premium"]:
                 return {cost_type: amount}
             elif cost_type in plural_map and item_id:
                 if cost_type == "fish" and quality_level > 0:
@@ -332,7 +377,7 @@ class ShopService:
                 for cost in group_costs:
                     self._merge_costs(and_costs, _get_cost_dict(cost, quantity))
             elif relation == "or":
-                current_or_group = [_get_cost_dict(c, quantity) for c in group_costs if _get_cost_dict(c, quantity)]
+                current_or_group = [parsed for c in group_costs if (parsed := _get_cost_dict(c, quantity))]
                 if current_or_group:
                     or_choices.append(current_or_group)
 
@@ -361,12 +406,9 @@ class ShopService:
             resources["fish"][fish_id][quality] = resources["fish"][fish_id].get(quality, 0) + fish_item.quantity
 
         # 鱼竿和饰品只计入未锁定且未装备的
-        for rod in self.inventory_repo.get_user_rod_instances(user.user_id):
-            if not rod.is_locked and not rod.is_equipped:
-                resources["rods"][rod.rod_id] = resources["rods"].get(rod.rod_id, 0) + 1
-        for acc in self.inventory_repo.get_user_accessory_instances(user.user_id):
-            if not acc.is_locked and not acc.is_equipped:
-                resources["accessories"][acc.accessory_id] = resources["accessories"].get(acc.accessory_id, 0) + 1
+        for category in ("rods", "accessories"):
+            for instance, rarity in self._available_equipment(user.user_id, category):
+                resources[category][rarity] = resources[category].get(rarity, 0) + 1
         
         return resources
 
@@ -470,42 +512,34 @@ class ShopService:
                         quality_label = "✨高品质" if quality_level == 1 else "普通"
                         return {"success": False, "message": f"{quality_label}鱼类不足：{name} x{need_qty}（当前有 {available_qty} 条）"}
         
-        # 检查鱼竿（排除上锁和装备中的）
-        if costs.get("rods"):
-            user_rods = self.inventory_repo.get_user_rod_instances(user.user_id)
-            available_rods = {}
-            
-            for rod in user_rods:
-                if not rod.is_locked and not rod.is_equipped:  # 排除上锁和装备中的鱼竿
-                    rod_id = rod.rod_id
-                    available_rods[rod_id] = available_rods.get(rod_id, 0) + 1
-            
-            for rod_id, need_qty in costs["rods"].items():
-                if available_rods.get(rod_id, 0) < need_qty:
-                    rod_tpl = self.item_template_repo.get_rod_by_id(rod_id)
-                    name = rod_tpl.name if rod_tpl else str(rod_id)
-                    return {"success": False, "message": f"可用鱼竿不足：{name} x{need_qty}（已排除上锁和装备中的鱼竿）"}
-        
-        # 检查饰品（排除上锁和装备中的）
-        if costs.get("accessories"):
-            user_accessories = self.inventory_repo.get_user_accessory_instances(user.user_id)
-            available_accessories = {}
-            
-            for accessory in user_accessories:
-                if not accessory.is_locked and not accessory.is_equipped:  # 排除上锁和装备中的饰品
-                    accessory_id = accessory.accessory_id
-                    available_accessories[accessory_id] = available_accessories.get(accessory_id, 0) + 1
-            
-            for accessory_id, need_qty in costs["accessories"].items():
-                if available_accessories.get(accessory_id, 0) < need_qty:
-                    accessory_tpl = self.item_template_repo.get_accessory_by_id(accessory_id)
-                    name = accessory_tpl.name if accessory_tpl else str(accessory_id)
-                    return {"success": False, "message": f"可用饰品不足：{name} x{need_qty}（已排除上锁和装备中的饰品）"}
+        for category, label in (("rods", "鱼竿"), ("accessories", "饰品")):
+            if not costs.get(category):
+                continue
+            available = {}
+            for instance, rarity in self._available_equipment(user.user_id, category):
+                available[rarity] = available.get(rarity, 0) + 1
+            for rarity, need_qty in costs[category].items():
+                if available.get(int(rarity), 0) < need_qty:
+                    return {"success": False, "message": f"可用{rarity}星{label}不足，需要 {need_qty} 件（已排除锁定和正在装备的物品）"}
         
         return {"success": True}
 
     def _deduct_costs(self, user: Any, costs: Dict[str, Any]) -> None:
         """扣除用户资源"""
+        # 在扣除任何资源前确定装备材料，防止部分扣款后才发现材料不足。
+        equipment_plan = {"rods": [], "accessories": []}
+        for category, label in (("rods", "鱼竿"), ("accessories", "饰品")):
+            if not costs.get(category):
+                continue
+            available = {}
+            for instance, rarity in self._available_equipment(user.user_id, category):
+                available.setdefault(rarity, []).append(instance)
+            for rarity, need_qty in costs[category].items():
+                candidates = available.get(int(rarity), [])
+                if len(candidates) < need_qty:
+                    raise ValueError(f"可用{rarity}星{label}不足，请重新查询库存")
+                equipment_plan[category].extend(candidates[:need_qty])
+
         # 扣除金币
         if costs.get("coins", 0) > 0:
             user.coins -= costs["coins"]
@@ -543,37 +577,10 @@ class ShopService:
                         quality_level=quality_level
                     )
         
-        # 扣除鱼竿（排除上锁和装备中的）
-        if costs.get("rods"):
-            user_rods = self.inventory_repo.get_user_rod_instances(user.user_id)
-            for rod_id_str, need_qty in costs["rods"].items():
-                rod_id = int(rod_id_str) # 确保 rod_id 是整数
-                remaining_qty = need_qty
-                for rod in user_rods:
-                    if remaining_qty <= 0:
-                        break
-                    if (rod.rod_id == rod_id and 
-                        not rod.is_locked and 
-                        not rod.is_equipped):
-                        # 删除这个鱼竿实例
-                        self.inventory_repo.delete_rod_instance(rod.rod_instance_id)
-                        remaining_qty -= 1
-        
-        # 扣除饰品（排除上锁和装备中的）
-        if costs.get("accessories"):
-            user_accessories = self.inventory_repo.get_user_accessory_instances(user.user_id)
-            for accessory_id_str, need_qty in costs["accessories"].items():
-                accessory_id = int(accessory_id_str) # 确保 accessory_id 是整数
-                remaining_qty = need_qty
-                for accessory in user_accessories:
-                    if remaining_qty <= 0:
-                        break
-                    if (accessory.accessory_id == accessory_id and 
-                        not accessory.is_locked and 
-                        not accessory.is_equipped):
-                        # 删除这个饰品实例
-                        self.inventory_repo.delete_accessory_instance(accessory.accessory_instance_id)
-                        remaining_qty -= 1
+        for rod in equipment_plan["rods"]:
+            self.inventory_repo.delete_rod_instance(rod.rod_instance_id)
+        for accessory in equipment_plan["accessories"]:
+            self.inventory_repo.delete_accessory_instance(accessory.accessory_instance_id)
 
     def _give_rewards(self, user_id: str, rewards: List[Dict[str, Any]], quantity: int) -> List[str]:
         """发放奖励并返回获得的物品列表"""
@@ -651,6 +658,9 @@ class ShopService:
         
         for offer in offers:
             costs = self.shop_repo.get_item_costs(offer["item_id"])
+            for cost in costs:
+                if cost["cost_type"] in ("rod", "accessory"):
+                    cost["equipment_rarity"] = self.equipment_cost_rarity(cost)
             rewards = self.shop_repo.get_item_rewards(offer["item_id"])
             offers_view.append({
                 "offer": offer,

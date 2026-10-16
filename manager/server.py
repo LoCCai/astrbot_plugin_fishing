@@ -2034,9 +2034,11 @@ async def manage_shop_details(shop_id):
             elif cost["cost_type"] == "rod":
                 rod_template = item_template_service.get_rod_by_id(cost.get("cost_item_id"))
                 cost["rod_name"] = rod_template.name if rod_template else None
+                cost["equipment_rarity"] = rod_template.rarity if rod_template else None
             elif cost["cost_type"] == "accessory":
                 accessory_template = item_template_service.get_accessory_by_id(cost.get("cost_item_id"))
                 cost["accessory_name"] = accessory_template.name if accessory_template else None
+                cost["equipment_rarity"] = accessory_template.rarity if accessory_template else None
         
         # 为奖励添加物品名称
         for reward in rewards:
