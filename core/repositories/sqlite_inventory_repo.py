@@ -8,6 +8,7 @@ from astrbot.api import logger
 from .abstract_repository import AbstractInventoryRepository
 from ..domain.models import UserFishInventoryItem, UserAquariumItem, UserRodInstance, UserAccessoryInstance, FishingZone
 from ..database.connection_manager import DatabaseConnectionManager
+from ..rod_recycling import MAX_COINS
 
 
 class InsufficientFishQuantityError(Exception):
@@ -267,6 +268,13 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
 
             if result["total_value"] <= 0:
                 return result
+
+            cursor.execute("SELECT coins FROM users WHERE user_id = ?", (user_id,))
+            wallet = cursor.fetchone()
+            if wallet is None:
+                raise ValueError(f"用户 {user_id} 不存在")
+            if wallet[0] + result["total_value"] > MAX_COINS:
+                raise ValueError("结算后金币超出可用范围，本次未出售任何物品")
 
             cursor.execute("DELETE FROM user_fish_inventory WHERE user_id = ?", (user_id,))
             delete_instances("user_rods", "rod_instance_id", rod_ids)

@@ -19,6 +19,11 @@
     </div>
 </div>
 
+<div class="alert alert-info">
+    鱼竿默认按基础获得价的 {{ '%g'|format(recycle_discount * 10) }} 折回收，不叠加精炼倍率。
+    可为每种鱼竿单独指定回收价，留空保存即恢复默认；无有效获得价或价格过大的鱼竿须单独定价。
+</div>
+
 <div class="card border-primary">
     <div class="card-header">现有鱼竿列表</div>
     <div class="card-body">
@@ -30,7 +35,9 @@
                         <th>名称</th>
                         <th>稀有度</th>
                         <th>来源</th>
-                        <th>成本</th>
+                        <th>基础获得价</th>
+                        <th>回收价</th>
+                        <th>单独回收价</th>
                         <th>属性加成</th>
                         <th class="text-end">操作</th>
                     </tr>
@@ -42,7 +49,30 @@
                         <td>{{ item.name }}</td>
                         <td>{{ '★' * item.rarity }}</td>
                         <td>{{ item.source }}</td>
-                        <td>{{ item.purchase_cost or 'N/A' }}</td>
+                        <td>{{ item.purchase_cost if item.purchase_cost is not none else '未设置' }}</td>
+                        {% set quote = recycle_quotes[item.rod_id] %}
+                        <td>
+                            {% if quote.price is not none %}
+                                {{ '{:,}'.format(quote.price) }} 金币
+                                <small class="d-block text-muted">{{ '单独定价' if quote.override is not none else '默认折扣' }}</small>
+                            {% else %}
+                                <span class="text-warning" title="{{ quote.error }}">请单独定价</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if session.get('is_admin') %}
+                            <form action="{{ url_for('admin_bp.update_rod_recycle_price', rod_id=item.rod_id) }}" method="post" class="d-flex gap-2">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <input type="number" name="recycle_price" min="1" max="{{ max_coins }}" step="1"
+                                       class="form-control form-control-sm" style="min-width: 130px"
+                                       value="{{ quote.override if quote.override is not none else '' }}" placeholder="留空使用默认"
+                                       aria-label="{{ item.name }}的单独回收价">
+                                <button type="submit" class="btn btn-sm btn-primary">保存</button>
+                            </form>
+                            {% else %}
+                            <span class="text-muted">仅管理员可设置</span>
+                            {% endif %}
+                        </td>
                         <td>
                             <span class="badge bg-secondary">品质: {{ item.bonus_fish_quality_modifier }}</span>
                             <span class="badge bg-secondary">数量: {{ item.bonus_fish_quantity_modifier }}</span>

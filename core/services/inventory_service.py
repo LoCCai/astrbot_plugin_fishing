@@ -16,6 +16,7 @@ from ..aquarium_upgrade_config import (
 )
 from .effect_manager import EffectManager
 from ..utils import calculate_after_refine
+from ..rod_recycling import MAX_COINS
 from .game_mechanics_service import GameMechanicsService
 
 
@@ -372,14 +373,20 @@ class InventoryService:
             return {"success": False, "message": "用户不存在"}
 
         rod_prices = {}
+        unpriced_rods = 0
         rod_instances = self.inventory_repo.get_user_rod_instances(user_id)
         for rod_instance in rod_instances:
             if not rod_instance.is_locked and not rod_instance.is_equipped:
                 rod_template = self.item_template_repo.get_rod_by_id(rod_instance.rod_id)
                 if rod_template:
-                    base_price = self.config["sell_prices"]["rod"].get(str(rod_template.rarity), 100)
-                    refine_multiplier = self.config["sell_prices"]["refine_multiplier"].get(str(rod_instance.refine_level), 1.0)
-                    rod_prices[rod_instance.rod_instance_id] = int(base_price * refine_multiplier)
+                    try:
+                        rod_prices[rod_instance.rod_instance_id] = self.game_mechanics_service.calculate_sell_price(
+                            item_type="rod", rarity=rod_template.rarity,
+                            refine_level=rod_instance.refine_level,
+                            purchase_cost=rod_template.purchase_cost, rod_id=rod_template.rod_id,
+                        )
+                    except ValueError:
+                        unpriced_rods += 1
 
         accessory_prices = {}
         accessory_instances = self.inventory_repo.get_user_accessory_instances(user_id)
@@ -391,12 +398,17 @@ class InventoryService:
                     refine_multiplier = self.config["sell_prices"]["refine_multiplier"].get(str(accessory_instance.refine_level), 1.0)
                     accessory_prices[accessory_instance.accessory_instance_id] = int(base_price * refine_multiplier)
 
-        sold_items = self.inventory_repo.sell_everything_atomic(
-            user_id, rod_prices, accessory_prices
-        )
+        try:
+            sold_items = self.inventory_repo.sell_everything_atomic(
+                user_id, rod_prices, accessory_prices
+            )
+        except ValueError as exc:
+            return {"success": False, "message": str(exc)}
         total_value = sold_items["total_value"]
 
         if total_value == 0:
+            if unpriced_rods:
+                return {"success": False, "message": "❌ 没有可出售的物品，未设置可用回收价的鱼竿已保留，请管理员单独定价"}
             return {"success": False, "message": "❌ 没有可出售的物品（可能全部被锁定或仓库为空）"}
 
         # 原子出售已经更新金币，重新读取以免后续钱袋效果写回旧余额。
@@ -421,6 +433,8 @@ class InventoryService:
             message += f"👜 钱袋：自动开启获得 (💰 {coins_from_bags} 金币)\n"
         
         message += f"\n🔒 已锁定和装备中的装备已自动保留"
+        if unpriced_rods:
+            message += f"\n🎣 另有 {unpriced_rods} 根鱼竿未设置可用回收价，已保留，请管理员单独定价"
         
         return {"success": True, "message": message}
 
@@ -510,11 +524,16 @@ class InventoryService:
              return {"success": False, "message": "找不到鱼竿的基础信息"}
 
         # 3. 计算售价
-        sell_price = self.game_mechanics_service.calculate_sell_price(
-            item_type="rod",
-            rarity=rod_template.rarity,
-            refine_level=rod_to_sell.refine_level,
-        )
+        try:
+            sell_price = self.game_mechanics_service.calculate_sell_price(
+                item_type="rod", rarity=rod_template.rarity,
+                refine_level=rod_to_sell.refine_level,
+                purchase_cost=rod_template.purchase_cost, rod_id=rod_template.rod_id,
+            )
+        except ValueError as exc:
+            return {"success": False, "message": str(exc)}
+        if user.coins + sell_price > MAX_COINS:
+            return {"success": False, "message": "结算后金币超出可用范围，本次未出售任何鱼竿"}
 
         # 4. 执行操作
         # 如果卖出的是当前装备的鱼竿，需要先卸下
@@ -542,6 +561,7 @@ class InventoryService:
 
         total_value = 0
         rods_to_sell = []
+        unpriced_rods = 0
         
         # 只计算可以卖出的鱼竿（未锁定、未装备且小于5星）
         for rod_instance in user_rods:
@@ -549,16 +569,24 @@ class InventoryService:
                 continue
             rod_template = self.item_template_repo.get_rod_by_id(rod_instance.rod_id)
             if rod_template and rod_template.rarity < 5:  # 只计算小于5星的鱼竿
-                sell_price = self.game_mechanics_service.calculate_sell_price(
-                    item_type="rod",
-                    rarity=rod_template.rarity,
-                    refine_level=rod_instance.refine_level,
-                )
+                try:
+                    sell_price = self.game_mechanics_service.calculate_sell_price(
+                        item_type="rod", rarity=rod_template.rarity,
+                        refine_level=rod_instance.refine_level,
+                        purchase_cost=rod_template.purchase_cost, rod_id=rod_template.rod_id,
+                    )
+                except ValueError:
+                    unpriced_rods += 1
+                    continue
                 total_value += sell_price
                 rods_to_sell.append(rod_instance)
         
         if total_value == 0:
+            if unpriced_rods:
+                return {"success": False, "message": "❌ 未设置可用回收价的鱼竿已保留，请管理员单独定价"}
             return {"success": False, "message": "❌ 没有可以卖出的鱼竿（已自动保留锁定、已装备或5星以上的鱼竿）"}
+        if user.coins + total_value > MAX_COINS:
+            return {"success": False, "message": "结算后金币超出可用范围，本次未出售任何鱼竿"}
         
         # 逐个删除可以卖出的鱼竿
         for rod_instance in rods_to_sell:
@@ -567,7 +595,10 @@ class InventoryService:
         # 更新用户金币
         user.coins += total_value
         self.user_repo.update(user)
-        return {"success": True, "message": f"💰 成功卖出 {len(rods_to_sell)} 根鱼竿，获得 {total_value} 金币"}
+        message = f"💰 成功卖出 {len(rods_to_sell)} 根鱼竿，获得 {total_value} 金币"
+        if unpriced_rods:
+            message += f"\n另有 {unpriced_rods} 根未设置可用回收价的鱼竿已保留，请管理员单独定价"
+        return {"success": True, "message": message}
 
     def sell_accessory(self, user_id: str, accessory_instance_id: int) -> Dict[str, Any]:
         """

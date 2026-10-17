@@ -70,16 +70,17 @@ RUNTIME_SETTING_GROUPS: dict[str, dict[str, Any]] = {
     },
     "resale": {
         "title": "装备回收价",
-        "description": "鱼竿和饰品按星级共用基础回收价，保存后下一次出售立即生效。",
+        "description": "鱼竿默认按基础获得价五折回收，可在鱼竿管理单独定价；饰品按星级及精炼倍率计价。保存后下一次出售立即生效。",
         "fields": [
+            _field("rod_recycling.discount", "鱼竿默认回收比例", "float", 0.5,
+                   minimum=0.4, maximum=0.6, step="0.01", help_text="0.5 表示五折，允许四至六折；单独定价优先，鱼竿不叠加精炼倍率。"),
             *[
                 _field(
                     f"sell_prices.by_rarity_{rarity}",
-                    f"{rarity} 星装备基础回收价",
+                    f"{rarity} 星饰品基础回收价",
                     "int",
                     default,
                     runtime_paths=(
-                        f"sell_prices.rod.{rarity}",
                         f"sell_prices.accessory.{rarity}",
                     ),
                     minimum=0,

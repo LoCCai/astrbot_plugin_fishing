@@ -26,6 +26,7 @@ from ..core.runtime_settings import (
     setting_group_for_view,
     settings_groups_for_view,
 )
+from ..core.rod_recycling import MAX_COINS, calculate_rod_recycle_price, get_rod_recycle_override, parse_rod_recycle_override
 
 
 admin_bp = Blueprint(
@@ -568,7 +569,48 @@ async def manage_rods():
     item_template_service = current_app.config["ITEM_TEMPLATE_SERVICE"]
     # 调用服务层方法获取所有鱼竿模板
     items = item_template_service.get_all_rods()
-    return await render_template("rods.html", items=items)
+    game_config = current_app.config.get("GAME_CONFIG", {})
+    settings = game_config.get("rod_recycling", {})
+    quotes = {}
+    for item in items:
+        quote = {"override": None, "price": None}
+        try:
+            quote["override"] = get_rod_recycle_override(item.rod_id, game_config)
+            quote["price"] = calculate_rod_recycle_price(item.rod_id, item.purchase_cost, game_config)
+        except ValueError as exc:
+            quote["error"] = str(exc)
+        quotes[item.rod_id] = quote
+    return await render_template("rods.html", items=items, recycle_quotes=quotes,
+                                 recycle_discount=settings.get("discount", 0.5), max_coins=MAX_COINS)
+
+
+@admin_bp.route("/rods/recycle/<int:rod_id>", methods=["POST"])
+@login_required
+@admin_required
+@csrf_protect
+async def update_rod_recycle_price(rod_id):
+    try:
+        item_template_service = current_app.config["ITEM_TEMPLATE_SERVICE"]
+        if not item_template_service.get_rod_by_id(rod_id):
+            raise ValueError("鱼竿不存在")
+        form = await request.form
+        if "recycle_price" not in form:
+            raise ValueError("请填写单独回收价，留空可恢复默认")
+        price = parse_rod_recycle_override(form["recycle_price"])
+        settings = current_app.config["GAME_CONFIG"].get("rod_recycling", {})
+        overrides = [entry for entry in settings.get("overrides", [])
+                     if str(entry.get("rod_id")) != str(rod_id)]
+        if price is not None:
+            overrides.append({"__template_key": "rod_price", "rod_id": rod_id, "price": price})
+        updates = {"rod_recycling": {"overrides": overrides}}
+        paths = _persist_config_updates(updates)
+        if not paths:
+            raise ValueError("回收价保存失败，请检查插件配置文件后重试")
+        current_app.config["GAME_CONFIG"].setdefault("rod_recycling", {})["overrides"] = overrides
+        await flash("鱼竿回收价已保存并实时生效" if price is not None else "已恢复默认折扣回收价", "success")
+    except ValueError as exc:
+        await flash(str(exc), "danger")
+    return redirect(url_for("admin_bp.manage_rods"))
 
 
 @admin_bp.route("/rods/add", methods=["POST"])

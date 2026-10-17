@@ -8,14 +8,14 @@
 
 <div style="background: linear-gradient(135deg, #0ea5e9 0%,#86a4f8 100%); padding: 20px; border-radius: 15px; margin: 20px 0; box-shadow: 0 8px 32px hsla(199, 94.70%, 62.70%, 0.89);">
 
-### 🎒 **v2.6.8 完整物品清单 + 星级回收**
+### ♻️ **v2.6.9 鱼竿五折回收 + 单独定价**
 
-🎯 **完整查看所有星级的物品，按星级回收同类型装备！**
+🎯 **鱼竿默认按基础获得价五折回收，后台可为每种鱼竿单独定价！**
 
-🎒 **完整清单** - 鱼竿、饰品不再隐藏低星物品；鱼塘、鱼饵和道具长列表也改为合并转发<br>
-♻️ **星级回收** - 鱼竿和饰品分别匹配星级，同星不同名称可抵扣，不能跨类型混用<br>
-🛡️ **装备保护** - 跳过锁定和正在装备的物品，优先消耗低精炼装备<br>
-🖥️ **后台同步** - 回收条件按星级选择，库存支持搜索、星级与状态筛选、分页<br>
+♻️ **统一计价** - 单件出售、出售所有鱼竿和砸锅卖铁均按基础获得价折扣结算，鱼竿不叠加精炼倍率<br>
+🖥️ **单独定价** - 鱼竿管理页可直接指定回收价，留空保存恢复默认折扣，保存后实时生效<br>
+⚙️ **折扣配置** - 其他设置支持在四至六折之间调整默认比例<br>
+🛡️ **结算保护** - 未设有效价格或价格超出结算范围的鱼竿会保留，并提示管理员单独定价<br>
 
 
 </div>
@@ -27,7 +27,7 @@
 [![AGPL-3.0 License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://opensource.org/licenses/AGPL-3.0)
 [![Python](https://img.shields.io/badge/Python-3.8+-green.svg)](https://python.org)
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-orange.svg)](https://github.com/astrbot/astrbot)
-[![Version](https://img.shields.io/badge/Version-2.6.8-brightgreen.svg)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-2.6.9-brightgreen.svg)](./CHANGELOG.md)
 [![Major Update](https://img.shields.io/badge/Major-Update-red.svg)](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/releases/tag/v2.0.0)
 
 ## ✨ 功能特点
@@ -106,6 +106,15 @@
 如果您有功能建议或发现问题，欢迎在 [Issues](https://github.com/Akiyo-dayo/astrbot_plugin_fishing/issues) 中提出！
 
 ## 📦 更新记录
+
+#### ♻️ **v2.6.9 鱼竿五折回收 + 单独定价**
+
+- 鱼竿默认按基础获得价五折回收，折后向下取整，不叠加精炼倍率；三种出售入口统一计价
+- 鱼竿管理页展示实际回收价，管理员可单独定价或留空恢复默认，持久化保存并实时生效
+- 其他设置可在四至六折之间调整默认比例，饰品继续使用星级与精炼计价
+- 无有效获得价或价格超出结算范围的鱼竿保留，提示管理员单独定价；金币溢出时不扣除物品
+
+---
 
 #### 🎒 **v2.6.8 完整物品清单 + 星级回收**
 

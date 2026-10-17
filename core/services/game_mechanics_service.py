@@ -13,6 +13,7 @@ from ..repositories.abstract_repository import (
 )
 from ..domain.models import WipeBombLog, User
 from ...core.utils import get_now, get_today
+from ..rod_recycling import calculate_rod_recycle_price
 
 if TYPE_CHECKING:
     from ..repositories.sqlite_user_repo import SqliteUserRepository
@@ -967,7 +968,10 @@ class GameMechanicsService:
             "message": f"【{target.nickname}】{'有' if protection_buff else '没有'}海灵守护效果"
         }
 
-    def calculate_sell_price(self, item_type: str, rarity: int, refine_level: int) -> int:
+    def calculate_sell_price(
+        self, item_type: str, rarity: int, refine_level: int,
+        purchase_cost: Optional[int] = None, rod_id: Optional[int] = None,
+    ) -> int:
         """
         计算物品的系统售价。
 
@@ -975,10 +979,15 @@ class GameMechanicsService:
             item_type: 物品类型 ('rod', 'accessory')
             rarity: 物品稀有度
             refine_level: 物品精炼等级
+            purchase_cost: 鱼竿基础获得价
+            rod_id: 鱼竿模板ID，用于单独回收定价
 
         Returns:
             计算出的售价。
         """
+        if item_type == "rod":
+            return calculate_rod_recycle_price(rod_id, purchase_cost, self.config)
+
         sell_price_config = self.config.get("sell_prices", {})
         
         base_prices = sell_price_config.get(item_type, {})

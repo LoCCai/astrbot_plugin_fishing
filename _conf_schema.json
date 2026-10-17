@@ -355,8 +355,34 @@
       }
     }
   },
+  "rod_recycling": {
+    "description": "鱼竿回收定价",
+    "type": "object",
+    "items": {
+      "discount": {
+        "type": "float",
+        "default": 0.5,
+        "description": "默认回收比例（0.4–0.6，0.5 为五折；鱼竿不叠加精炼倍率）"
+      },
+      "overrides": {
+        "type": "template_list",
+        "description": "按鱼竿模板ID单独定价，请在鱼竿管理页修改；留空恢复默认",
+        "default": [],
+        "templates": {
+          "rod_price": {
+            "name": "鱼竿回收价",
+            "display_item": "rod_id",
+            "items": {
+              "rod_id": {"type": "int", "default": 1, "description": "鱼竿模板ID"},
+              "price": {"type": "int", "default": 1, "description": "单独回收价（金币）"}
+            }
+          }
+        }
+      }
+    }
+  },
   "sell_prices": {
-    "description": "物品(鱼竿和饰品)的出售价格",
+    "description": "饰品按星级的基础回收价格",
     "type": "object",
     "items": {
       "by_rarity_1": {

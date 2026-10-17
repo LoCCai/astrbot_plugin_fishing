@@ -214,6 +214,7 @@ class FishingPlugin(Star):
                 "tax_record_retention_days": tax_config.get("tax_record_retention_days", 90),
                 "tax_record_cleanup_batch_size": tax_config.get("tax_record_cleanup_batch_size", 1000),
             },
+            "rod_recycling": config.get("rod_recycling", {}),
             "sell_prices": {
                 "rod": { 
                     "1": sell_prices_config.get("by_rarity_1", 100),
