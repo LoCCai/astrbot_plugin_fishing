@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import copy
 import math
 import random
+from decimal import Decimal, InvalidOperation
 
 # 导入仓储接口
 from ..repositories.abstract_repository import (
@@ -31,6 +32,63 @@ class ShopService:
         self.user_repo = user_repo
         self.shop_repo = shop_repo
         self.config = config or {}
+
+    def get_rod_acquisition_costs(self) -> Dict[int, Dict[str, Any]]:
+        """按商店实际条件折算每根鱼竿的最低成本，保留已下架商品的获得价。"""
+        quotes = {}
+        if self.shop_repo is None:
+            return quotes
+
+        def coin_value(cost):
+            amount = Decimal(str(cost["cost_amount"]))
+            if cost["cost_type"] == "coins":
+                return amount, f"{amount:,} 金币"
+            if cost["cost_type"] == "fish":
+                quality = cost.get("quality_level", 0)
+                fish = self.item_template_repo.get_fish_by_id(cost.get("cost_item_id"))
+                if not fish or fish.base_value <= 0 or quality < 0:
+                    raise ValueError("兑换鱼的售价无效，请管理员单独配置回收价")
+                return (Decimal(str(fish.base_value)) * (1 + quality) * amount,
+                        f"{'高品质' if quality else '普通'}{fish.name} × {amount}")
+            raise ValueError("含钻石或其他材料，无法自动折算金币，请管理员单独配置回收价")
+
+        for shop in self.shop_repo.get_all_shops():
+            for item in self.shop_repo.get_shop_items(shop["shop_id"]):
+                rewards = self.shop_repo.get_item_rewards(item["item_id"])
+                rod_ids = {r["reward_item_id"] for r in rewards if r["reward_type"] == "rod"}
+                if not rod_ids:
+                    continue
+                quote = {"cost": None, "source": f"{shop['name']} · {item['name']}"}
+                try:
+                    if len(rewards) != 1 or rewards[0].get("reward_quantity", 1) <= 0:
+                        raise ValueError("组合奖励无法单独分摊成本，请管理员单独配置回收价")
+                    costs = self.shop_repo.get_item_costs(item["item_id"])
+                    if any(c["cost_type"] not in ("coins", "premium", "fish")
+                           or c["cost_amount"] <= 0
+                           or (c["cost_type"] == "fish" and not c.get("cost_item_id")) for c in costs):
+                        raise ValueError("兑换材料无法自动折算金币，请管理员单独配置回收价")
+                    # 与真实购买共用分组规则：组间 AND，OR 组取最低等值成本。
+                    total, labels = Decimal(0), []
+                    for relation, group_costs in self._get_cost_groups(costs):
+                        choices = [coin_value(c) for c in group_costs]
+                        if relation == "or":
+                            choices = [min(choices, key=lambda pair: pair[0])]
+                        elif relation != "and":
+                            raise ValueError("兑换条件无效，请管理员单独配置回收价")
+                        for value, label in choices:
+                            total += value
+                            labels.append(label)
+                    quantity = rewards[0].get("reward_quantity", 1)
+                    quote["cost"] = total / quantity
+                    quote["source"] += f"：{' + '.join(labels) or '免费'} → {quantity} 根"
+                except (ValueError, TypeError, InvalidOperation) as exc:
+                    quote["error"] = str(exc)
+                for rod_id in rod_ids:
+                    previous = quotes.get(rod_id)
+                    if (previous is None or (quote["cost"] is not None
+                            and (previous["cost"] is None or quote["cost"] < previous["cost"]))):
+                        quotes[rod_id] = quote
+        return quotes
 
     def equipment_cost_rarity(self, cost: Dict[str, Any]) -> Optional[int]:
         """装备成本沿用模板配置，匹配时使用该模板的星级。"""
@@ -330,17 +388,20 @@ class ShopService:
                 else:
                     base_costs[category][item_id] = base_costs[category].get(item_id, 0) + new_value
 
+    @staticmethod
+    def _get_cost_groups(costs):
+        groups = {}
+        for cost in costs:
+            group_id = cost.get("group_id", 0)
+            groups.setdefault(group_id, []).append(cost)
+        for _, group_costs in sorted(groups.items(), key=lambda item: item[0]):
+            relation = group_costs[0].get("cost_relation", "and") if len(group_costs) > 1 else "and"
+            yield relation, group_costs
+
     def _get_cost_structure(self, costs: List[Dict[str, Any]], quantity: int) -> Dict[str, Any]:
         """解析数据库成本，返回包含必须成本(and_costs)和可选成本组(or_choices)的结构"""
         if not costs:
             return {"and_costs": {}, "or_choices": []}
-
-        groups = {}
-        for cost in costs:
-            group_id = cost.get("group_id", 0)
-            if group_id not in groups:
-                groups[group_id] = []
-            groups[group_id].append(cost)
 
         and_costs = {"coins": 0, "premium": 0, "items": {}, "fish": {}, "rods": {}, "accessories": {}}
         or_choices = []
@@ -367,12 +428,7 @@ class ShopService:
                     return {plural_map[cost_type]: {item_id: amount}}
             return {}
 
-        # 确保OR选项按某种稳定顺序处理，例如group_id
-        sorted_groups = sorted(groups.items(), key=lambda item: item[0])
-
-        for group_id, group_costs in sorted_groups:
-            relation = group_costs[0].get("cost_relation", "and") if len(group_costs) > 1 else "and"
-
+        for relation, group_costs in self._get_cost_groups(costs):
             if relation == "and":
                 for cost in group_costs:
                     self._merge_costs(and_costs, _get_cost_dict(cost, quantity))

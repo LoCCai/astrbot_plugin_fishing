@@ -20,8 +20,9 @@
 </div>
 
 <div class="alert alert-info">
-    鱼竿默认按基础获得价的 {{ '%g'|format(recycle_discount * 10) }} 折回收，不叠加精炼倍率。
-    可为每种鱼竿单独指定回收价，留空保存即恢复默认；无有效获得价或价格过大的鱼竿须单独定价。
+    鱼竿默认按商店实际获得成本的 {{ '%g'|format(recycle_discount * 10) }} 折回收，不叠加精炼倍率。
+    兑换鱼按对应品质的售鱼价折算，多个兑换选项取最低成本；钻石及其他无法折算的材料须单独定价。
+    可为每种鱼竿指定回收价，留空保存即恢复默认。
 </div>
 
 <div class="card border-primary">
@@ -35,7 +36,7 @@
                         <th>名称</th>
                         <th>稀有度</th>
                         <th>来源</th>
-                        <th>基础获得价</th>
+                        <th>商店获得成本</th>
                         <th>回收价</th>
                         <th>单独回收价</th>
                         <th>属性加成</th>
@@ -49,8 +50,11 @@
                         <td>{{ item.name }}</td>
                         <td>{{ '★' * item.rarity }}</td>
                         <td>{{ item.source }}</td>
-                        <td>{{ item.purchase_cost if item.purchase_cost is not none else '未设置' }}</td>
                         {% set quote = recycle_quotes[item.rod_id] %}
+                        <td>
+                            {{ '{:,g}'.format(quote.cost) ~ ' 金币 / 根' if quote.cost is not none else '无法自动折算' }}
+                            <small class="d-block text-muted">{{ quote.source }}</small>
+                        </td>
                         <td>
                             {% if quote.price is not none %}
                                 {{ '{:,}'.format(quote.price) }} 金币

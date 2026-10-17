@@ -373,6 +373,7 @@ class InventoryService:
             return {"success": False, "message": "用户不存在"}
 
         rod_prices = {}
+        acquisition_costs = self.game_mechanics_service.get_rod_acquisition_costs()
         unpriced_rods = 0
         rod_instances = self.inventory_repo.get_user_rod_instances(user_id)
         for rod_instance in rod_instances:
@@ -383,7 +384,7 @@ class InventoryService:
                         rod_prices[rod_instance.rod_instance_id] = self.game_mechanics_service.calculate_sell_price(
                             item_type="rod", rarity=rod_template.rarity,
                             refine_level=rod_instance.refine_level,
-                            purchase_cost=rod_template.purchase_cost, rod_id=rod_template.rod_id,
+                            rod_id=rod_template.rod_id, acquisition_costs=acquisition_costs,
                         )
                     except ValueError:
                         unpriced_rods += 1
@@ -528,7 +529,7 @@ class InventoryService:
             sell_price = self.game_mechanics_service.calculate_sell_price(
                 item_type="rod", rarity=rod_template.rarity,
                 refine_level=rod_to_sell.refine_level,
-                purchase_cost=rod_template.purchase_cost, rod_id=rod_template.rod_id,
+                rod_id=rod_template.rod_id,
             )
         except ValueError as exc:
             return {"success": False, "message": str(exc)}
@@ -562,6 +563,7 @@ class InventoryService:
         total_value = 0
         rods_to_sell = []
         unpriced_rods = 0
+        acquisition_costs = self.game_mechanics_service.get_rod_acquisition_costs()
         
         # 只计算可以卖出的鱼竿（未锁定、未装备且小于5星）
         for rod_instance in user_rods:
@@ -573,7 +575,7 @@ class InventoryService:
                     sell_price = self.game_mechanics_service.calculate_sell_price(
                         item_type="rod", rarity=rod_template.rarity,
                         refine_level=rod_instance.refine_level,
-                        purchase_cost=rod_template.purchase_cost, rod_id=rod_template.rod_id,
+                        rod_id=rod_template.rod_id, acquisition_costs=acquisition_costs,
                     )
                 except ValueError:
                     unpriced_rods += 1

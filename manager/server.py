@@ -571,14 +571,17 @@ async def manage_rods():
     items = item_template_service.get_all_rods()
     game_config = current_app.config.get("GAME_CONFIG", {})
     settings = game_config.get("rod_recycling", {})
+    shop_service = current_app.config.get("SHOP_SERVICE")
+    acquisition_costs = shop_service.get_rod_acquisition_costs() if shop_service else {}
     quotes = {}
     for item in items:
-        quote = {"override": None, "price": None}
+        quote = {"override": None, "price": None,
+                 **acquisition_costs.get(item.rod_id, {"cost": None, "source": "未找到可折算的商店商品"})}
         try:
             quote["override"] = get_rod_recycle_override(item.rod_id, game_config)
-            quote["price"] = calculate_rod_recycle_price(item.rod_id, item.purchase_cost, game_config)
+            quote["price"] = calculate_rod_recycle_price(item.rod_id, quote["cost"], game_config)
         except ValueError as exc:
-            quote["error"] = str(exc)
+            quote.setdefault("error", str(exc))
         quotes[item.rod_id] = quote
     return await render_template("rods.html", items=items, recycle_quotes=quotes,
                                  recycle_discount=settings.get("discount", 0.5), max_coins=MAX_COINS)

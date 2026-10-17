@@ -81,7 +81,8 @@ class GameMechanicsService:
         inventory_repo: AbstractInventoryRepository,
         item_template_repo: AbstractItemTemplateRepository,
         buff_repo: AbstractUserBuffRepository,
-        config: Dict[str, Any]
+        config: Dict[str, Any],
+        shop_service=None,
     ):
         self.user_repo = user_repo
         self.log_repo = log_repo
@@ -89,6 +90,7 @@ class GameMechanicsService:
         self.item_template_repo = item_template_repo
         self.buff_repo = buff_repo
         self.config = config
+        self.shop_service = shop_service
         # 服务器级别的抑制状态
         self._server_suppressed = False
         self._last_suppression_date = None
@@ -968,9 +970,13 @@ class GameMechanicsService:
             "message": f"【{target.nickname}】{'有' if protection_buff else '没有'}海灵守护效果"
         }
 
+    def get_rod_acquisition_costs(self) -> Dict[int, Dict[str, Any]]:
+        return self.shop_service.get_rod_acquisition_costs() if self.shop_service else {}
+
     def calculate_sell_price(
         self, item_type: str, rarity: int, refine_level: int,
         purchase_cost: Optional[int] = None, rod_id: Optional[int] = None,
+        acquisition_costs: Optional[Dict[int, Dict[str, Any]]] = None,
     ) -> int:
         """
         计算物品的系统售价。
@@ -979,14 +985,16 @@ class GameMechanicsService:
             item_type: 物品类型 ('rod', 'accessory')
             rarity: 物品稀有度
             refine_level: 物品精炼等级
-            purchase_cost: 鱼竿基础获得价
+            purchase_cost: 兼容旧调用的参数，鱼竿不再使用模板标价
             rod_id: 鱼竿模板ID，用于单独回收定价
+            acquisition_costs: 本次出售共用的商店成本快照
 
         Returns:
             计算出的售价。
         """
         if item_type == "rod":
-            return calculate_rod_recycle_price(rod_id, purchase_cost, self.config)
+            costs = self.get_rod_acquisition_costs() if acquisition_costs is None else acquisition_costs
+            return calculate_rod_recycle_price(rod_id, costs.get(rod_id, {}).get("cost"), self.config)
 
         sell_price_config = self.config.get("sell_prices", {})
         

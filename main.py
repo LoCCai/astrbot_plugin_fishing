@@ -289,8 +289,10 @@ class FishingPlugin(Star):
         # --- 3. 组合根：实例化所有服务层，并注入依赖 ---
         # 3.1 核心服务必须在效果管理器之前实例化，以解决依赖问题
         self.fishing_zone_service = FishingZoneService(self.item_template_repo, self.inventory_repo, self.game_config)
+        self.shop_service = ShopService(self.item_template_repo, self.inventory_repo, self.user_repo, self.shop_repo, self.game_config)
         self.game_mechanics_service = GameMechanicsService(self.user_repo, self.log_repo, self.inventory_repo,
-                                                          self.item_template_repo, self.buff_repo, self.game_config)
+                                                          self.item_template_repo, self.buff_repo, self.game_config,
+                                                          shop_service=self.shop_service)
 
         # 3.3 实例化其他核心服务
         self.gacha_service = GachaService(self.gacha_repo, self.user_repo, self.inventory_repo, self.item_template_repo,
@@ -316,7 +318,6 @@ class FishingPlugin(Star):
             self.game_config,
             self.fish_pond_config_repo,
         )
-        self.shop_service = ShopService(self.item_template_repo, self.inventory_repo, self.user_repo, self.shop_repo, self.game_config)
         # MarketService 依赖 exchange_repo
         self.market_service = MarketService(self.market_repo, self.inventory_repo, self.user_repo, self.log_repo,
                                            self.item_template_repo, self.exchange_repo, self.game_config)

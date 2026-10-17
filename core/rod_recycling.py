@@ -29,7 +29,7 @@ def get_rod_recycle_override(rod_id: int | None, game_config: Mapping[str, Any])
 def calculate_rod_recycle_price(
     rod_id: int | None, purchase_cost: Any, game_config: Mapping[str, Any]
 ) -> int:
-    """鱼竿使用基础获得价的折扣或单独定价，不叠加精炼倍率。"""
+    """鱼竿使用商店实际获得成本的折扣或单独定价，不叠加精炼倍率。"""
     settings = game_config.get("rod_recycling", {})
     override = get_rod_recycle_override(rod_id, game_config)
     if override is not None:
